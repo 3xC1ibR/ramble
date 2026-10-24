@@ -40,7 +40,11 @@ DECISION_SCHEMA = {
                 "properties": {
                     "kind": {"type": "string", "enum": ["idea", "task", "link", "question", "reflection", "note"]},
                     "text": {"type": "string", "description": "The item restated cleanly in the user's terms."},
-                    "action": {"type": "string", "enum": ["log", "dispatch"]},
+                    "action": {"type": "string", "enum": ["log", "dispatch", "ask"]},
+                    "question": {
+                        "type": ["string", "null"],
+                        "description": "When action is ask: one short spoken question for the user (under 25 words). Otherwise null.",
+                    },
                     "dispatch": {
                         "type": ["object", "null"],
                         "description": "Required when action is dispatch, otherwise null.",
@@ -53,7 +57,7 @@ DECISION_SCHEMA = {
                         "required": ["name", "cwd", "prompt"],
                     },
                 },
-                "required": ["kind", "text", "action", "dispatch"],
+                "required": ["kind", "text", "action", "question", "dispatch"],
             },
         },
         "notify": {
@@ -146,6 +150,14 @@ class Router:
             ]
             extra = f" (dispatched: {', '.join(names)})" if names else ""
             lines.append(f"- {stamp(r['started_at'])} [{r['classification']}] {r['summary']}{extra}")
+        asked = []
+        for r in conn.execute(
+            "SELECT started_at, triage_json FROM thoughts WHERE status='done' AND started_at>=? ORDER BY started_at",
+            (time.time() - 2 * 3600,),
+        ):
+            for item in json.loads(r["triage_json"] or "{}").get("items", []):
+                if item.get("action") == "ask" and item.get("question"):
+                    asked.append(f"- {stamp(r['started_at'])} asked: {item['question']} (about: {item.get('text')})")
         used = self.dispatches_today(conn)
         cap = self.cfg["dispatch_daily_cap"]
         return "\n".join(
@@ -155,6 +167,9 @@ class Router:
                 "",
                 "Recent thoughts (last 24h, for continuity):",
                 *(lines or ["- none"]),
+                "",
+                "Questions ramble asked the user in the last 2h (the new thought may answer one):",
+                *(asked or ["- none"]),
                 "",
                 f"New thought {thought['id']} ({stamp(thought['started_at'])}–{stamp(thought['ended_at'])}), speech-to-text:",
                 "<transcript>",
@@ -260,9 +275,12 @@ class Router:
             self.current = None
             return
         dispatched = []
+        questions = []
         for item in decision.get("items", []):
             if item.get("action") == "dispatch" and item.get("dispatch"):
                 dispatched.append(self.dispatch(conn, thought, item))
+            elif item.get("action") == "ask" and item.get("question"):
+                questions.append(item["question"])
         conn.execute(
             "UPDATE thoughts SET status='done', classification=?, summary=?, triage_json=?, triaged_at=? WHERE id=?",
             (decision.get("classification"), decision.get("summary"), json.dumps(decision), time.time(), tid),
@@ -274,8 +292,24 @@ class Router:
             msg = "Started: " + ", ".join(d["name"] for d in created)
         if msg:
             notify(self.cfg, msg)
+        for q in questions:
+            self.ask(q)
         log.info("triaged %s -> %s (%d dispatched)", tid, decision.get("classification"), len(created))
         self.current = None
+
+    def ask(self, question: str) -> None:
+        """Ask the user out loud (and as a notification). His spoken answer arrives as a later thought."""
+        notify(self.cfg, question, title="Ramble asks")
+        if not self.cfg.get("speak_questions", True):
+            log.info("asked (silent): %s", question)
+            return
+        try:
+            from . import speech  # spoken replies; optional
+
+            speech.speak(question, self.cfg)
+        except Exception:  # noqa: BLE001
+            log.exception("could not speak question")
+        log.info("asked: %s", question)
 
     # ---- dispatch ---------------------------------------------------------
     def dispatches_today(self, conn) -> int:
@@ -345,6 +379,8 @@ def write_digest(thought, decision: dict, dispatched: list[dict]) -> None:
         f.write(f"{decision.get('summary', '').strip()}\n\n")
         for item in decision.get("items", []):
             f.write(f"- **{item.get('kind')}** ({item.get('action')}): {item.get('text')}\n")
+            if item.get("action") == "ask":
+                f.write(f"  - asked: _{item.get('question')}_\n")
         for d in dispatched:
             link = f" ([open]({d['url']}))" if d.get("url") else ""
             f.write(f"- → dispatched `{d['name']}` in `{d['cwd']}`: {d['status']}{link}\n")
