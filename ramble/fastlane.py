@@ -156,19 +156,24 @@ class FastLane:
         reply = ans["reply"].strip()
         self.history.append((seg["started_at"], "the user", text))
         self.history.append((time.time(), "Ramble", reply))
-        # Leave a trace in the thought so the slow lane knows this was answered or handed off.
-        tid = conn.execute("SELECT thought_id FROM segments WHERE id=?", (seg["id"],)).fetchone()
-        if tid and tid[0]:
-            note = f"[{stamp(time.time())}] (Ramble replied: {reply}{' [handoff: dispatch this]' if ans['handoff'] else ''})"
-            conn.execute("UPDATE thoughts SET text=text || char(10) || ? WHERE id=?", (note, tid[0]))
         log.info("fast reply in %.1fs (handoff=%s): %s", time.time() - t0, ans["handoff"], reply)
         log.info("reply ready %.1fs after he stopped talking", time.time() - seg["ended_at"])
-        if not self.cfg.get("fast_speak", True):  # tests
-            return
-        try:
-            from . import speech
+        spoken, err = True, None
+        if self.cfg.get("fast_speak", True):  # off in tests
+            try:
+                from . import speech
 
-            speech.speak(reply, self.cfg)
-        except Exception:  # noqa: BLE001
-            log.exception("could not speak fast reply")
-        log.info("finished speaking %.1fs after he stopped talking", time.time() - seg["ended_at"])
+                speech.speak(reply, self.cfg)
+                log.info("finished speaking %.1fs after he stopped talking", time.time() - seg["ended_at"])
+            except Exception as e:  # noqa: BLE001
+                spoken, err = False, str(e)[:200]
+                log.exception("could not speak fast reply")
+        # Leave a trace in the thought so the slow lane knows what actually reached him.
+        tid = conn.execute("SELECT thought_id FROM segments WHERE id=?", (seg["id"],)).fetchone()
+        if tid and tid[0]:
+            handoff = " [handoff: dispatch this]" if ans["handoff"] else ""
+            if spoken:
+                note = f"[{stamp(time.time())}] (Ramble replied: {reply}{handoff})"
+            else:
+                note = f"[{stamp(time.time())}] (Ramble's spoken reply FAILED, he did not hear it: {reply}{handoff}; error: {err})"
+            conn.execute("UPDATE thoughts SET text=text || char(10) || ? WHERE id=?", (note, tid[0]))

@@ -52,7 +52,7 @@ One thought can yield several items. Prefer one well-briefed dispatch over sever
 [historical text removed for privacy]
 [historical text removed for privacy]
 [historical text removed for privacy]
-- **prompt**: a complete, self-contained brief for a capable engineer who never heard the recording. Include what he said and meant, the concrete deliverable, where to put it, and how to verify. Pick the technically best approach rather than the literal wording. Small, runnable, verified beats big and speculative. For prototypes, ask for a README explaining how to run it.
+[historical text removed for privacy]
 
 ## Notify
 

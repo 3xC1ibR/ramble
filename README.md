@@ -40,6 +40,8 @@ Say its name and you get a spoken answer in about 10 seconds: "Ramble, what's th
 
 - `ramble/fastlane.py` detects addressing, using the name regex (Whisper spellings like "Rambo" and "rumble" count, "rambling" doesn't) or the follow-up window from `speech_playbacks`. It runs a quick `codex exec` (`fast_model` gpt-6.1-sol, low effort, cwd `~/.ramble`, prompt `prompts/fast.md`) and speaks the reply with `speech.speak`.
 - **Real work gets "on it" and a handoff.** The reply is appended to the thought as `(Ramble replied: ... [handoff: dispatch this])`, and the slow lane dispatches it when the thought closes.
+[historical text removed for privacy]
+- **A reply is recorded in the thought only after it's spoken.** A failed playback is recorded as `(Ramble's spoken reply FAILED ...)` so the slow lane doesn't assume he heard it.
 - **Without the name, nothing is spoken.** Passive capture, triage and dispatch work as before.
 - **Measured (generated audio, no playback):** a weather answer came back 9.0 s after the utterance was transcribed, and a work handoff took 5.6 s. Add about 1 s for silence detection and Whisper, and about 1.2 s of coalescing.
 
