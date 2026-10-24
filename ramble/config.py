@@ -52,6 +52,14 @@ DEFAULTS = {
     # Notifications
     "notify": True,
     "ntfy_topic": None,  # optional https://ntfy.sh/<topic> for phone pushes
+    # Fast lane: spoken answers when addressed by name ("Ramble, ...")
+    "fast_enabled": True,
+    "fast_model": "gpt-6.1-sol",
+    "fast_effort": "low",
+    "fast_timeout_s": 60,
+    "followup_s": 20.0,  # after Ramble speaks, the next utterance counts as addressed
+    "fast_name_window_s": 8.0,  # after a bare "Ramble?", the next utterance is the request
+    "fast_coalesce_s": 1.2,  # merge a request split by a short pause
     # Spoken replies (explicit only; no automatic dispatch acknowledgements)
     "tts_url": "http://127.0.0.1:8880/v1/audio/speech",
     "tts_model": "kokoro",

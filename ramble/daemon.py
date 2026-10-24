@@ -9,6 +9,7 @@ import threading
 import time
 
 from . import config, db, state
+from .fastlane import FastLane
 from .recorder import Recorder
 from .router import Router
 from .transcribe import Transcriber
@@ -40,12 +41,15 @@ class Daemon:
         self.recorder = Recorder(self.cfg, self.wake)
         self.transcriber = Transcriber(self.cfg, self.wake)
         self.router = Router(self.cfg, self.wake)
+        self.fast = FastLane(self.cfg)
+        self.transcriber.on_utterance = self.fast.offer
 
     def start(self) -> None:
         db.connect().close()
         threading.Thread(target=self.transcriber.run_forever, args=(self.stop,), name="transcriber", daemon=True).start()
         threading.Thread(target=self.router.run_forever, args=(self.stop,), name="router", daemon=True).start()
         threading.Thread(target=self._mic_control, name="mic-control", daemon=True).start()
+        threading.Thread(target=self.fast.run_forever, args=(self.stop,), name="fast-lane", daemon=True).start()
         log.info("ramble started; state=%s; data=%s", state.describe(), config.HOME)
 
     def _mic_control(self) -> None:

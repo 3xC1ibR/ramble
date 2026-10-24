@@ -11,3 +11,4 @@ Read `README.md` first; it has the architecture, data layout, settings and code 
 - **Dispatches need a caller session**, so they use `--from-session` with ramble's own registered session (`~/.ramble/agent_coord_session`, name "Ramble voice dispatcher").
 - **Behavior changes usually belong in `prompts/triage.md`**, not code. Keep the structured decision schema in `ramble/router.py` in sync with the prompt.
 [historical text removed for privacy]
+- **Never play test audio through the speakers.** The live app hears it and acts on it; a fixture once dispatched two real agents. Generate files with `ramble say --no-play --output f.wav "..."` and feed them to a throwaway daemon with `ramble ingest f.wav`. Set `"fast_speak": false` and `"speak_questions": false` in the test config.

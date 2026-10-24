@@ -52,6 +52,7 @@ class Transcriber:
         self.cfg = cfg
         self.wake = wake
         self.backlog = 0
+        self.on_utterance = None  # fast lane hook: (conn, segment_row, text) -> bool
 
     def warmup(self) -> None:
         import mlx_whisper
@@ -114,6 +115,11 @@ class Transcriber:
         )
         Path(row["audio_path"]).with_suffix(".txt").write_text(text + "\n")
         log.info("heard [%s] %s", row["id"][-6:], text[:120])
+        if self.on_utterance:
+            try:
+                self.on_utterance(conn, row, text)
+            except Exception:  # noqa: BLE001
+                log.exception("fast lane hook failed")
 
 
 def stamp(ts: float) -> str:

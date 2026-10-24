@@ -34,6 +34,15 @@ ramble retriage <id>     # run triage again (e.g. after an error or a prompt cha
 
 Turn it off for guests, calls and movies. The triage prompt also treats TV, other people and phone calls as `ambient` or `personal` and never dispatches from them.
 
+## Talking to Ramble (fast lane)
+
+Say its name and you get a spoken answer in about 10 seconds: "Ramble, what's the weather?", "hey Ramble, what are my agents doing?", or "...right, Ramble?" at the end of a sentence. A bare "Ramble?" waits up to 8 s for the request. For 20 s after Ramble speaks, you can follow up without the name.
+
+- `ramble/fastlane.py` detects addressing, using the name regex (Whisper spellings like "Rambo" and "rumble" count, "rambling" doesn't) or the follow-up window from `speech_playbacks`. It runs a quick `codex exec` (`fast_model` gpt-6.1-sol, low effort, cwd `~/.ramble`, prompt `prompts/fast.md`) and speaks the reply with `speech.speak`.
+- **Real work gets "on it" and a handoff.** The reply is appended to the thought as `(Ramble replied: ... [handoff: dispatch this])`, and the slow lane dispatches it when the thought closes.
+- **Without the name, nothing is spoken.** Passive capture, triage and dispatch work as before.
+- **Measured (generated audio, no playback):** a weather answer came back 9.0 s after the utterance was transcribed, and a work handoff took 5.6 s. Add about 1 s for silence detection and Whisper, and about 1.2 s of coalescing.
+
 ## Install / run
 
 ```bash

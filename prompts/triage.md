@@ -26,6 +26,10 @@ Don't dispatch when:
 - it's venting, a feeling, or a reflection. Log it.
 - the dispatch budget is 0. Log it with a note that the cap was hit. Asking a clarifying question is still allowed, since it costs nothing.
 
+## Fast-lane replies
+
+[historical text removed for privacy]
+
 ## When to ask instead
 
 Use action `ask` with one short spoken `question` (under 25 words) when the intent is clear enough to act on, but acting on a guess could do the wrong thing:
