@@ -46,9 +46,13 @@ class Segmenter:
         self.speech_chunks = 0
         self.silent_run = 0
 
-    def feed(self, chunk: np.ndarray, ts: float) -> None:
-        """ts = wall-clock time of the chunk's first sample."""
+    def feed(self, chunk: np.ndarray, ts: float) -> float:
+        """ts = wall-clock time of the chunk's first sample. Returns the speech probability."""
         p = self.vad(chunk)
+        self._feed(chunk, ts, p)
+        return p
+
+    def _feed(self, chunk: np.ndarray, ts: float, p: float) -> None:
         if not self.buf:
             if p >= self.on_thr:
                 self.start_ts = ts - len(self.pre) * CHUNK_S
@@ -196,6 +200,9 @@ class Recorder:
         seg = Segmenter(self.cfg, on_segment)
         pending = np.zeros(0, dtype=np.float32)
         pending_ts = 0.0
+        # Periodic input levels in the log: tells "mic delivers silence" (permission/device)
+        # apart from "too quiet/far for the VAD".
+        win_start, rms_max, vad_max = time.time(), 0.0, 0.0
         while True:
             item = self.q.get()
             if item is None:
@@ -205,9 +212,13 @@ class Recorder:
                 pending_ts = ts
             pending = np.concatenate([pending, data])
             self.level = float(np.sqrt(np.mean(data**2))) if len(data) else 0.0
+            rms_max = max(rms_max, self.level)
             while len(pending) >= CHUNK:
-                seg.feed(pending[:CHUNK], pending_ts)
+                vad_max = max(vad_max, seg.feed(pending[:CHUNK], pending_ts))
                 pending = pending[CHUNK:]
                 pending_ts += CHUNK_S
+            if time.time() - win_start >= 60:
+                log.info("levels (60s): rms_max=%.4f vad_max=%.2f", rms_max, vad_max)
+                win_start, rms_max, vad_max = time.time(), 0.0, 0.0
         seg.flush()
         conn.close()
