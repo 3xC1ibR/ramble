@@ -75,6 +75,8 @@ If the server is unreachable, times out, or returns invalid audio, Ramble logs a
 
 [historical text removed for privacy]
 
+**Delivery-app callouts:** an optional authenticated webhook lets iPhone/iPad Shortcuts app-open automations trigger a teasing or firm Uber Eats/DoorDash callout on the Mac, with a shared cooldown. See [setup, configuration and verification](docs/delivery-callouts.md); each device needs its own automations.
+
 ## Data (`~/.ramble`, never in the repo)
 
 | Path | What |
