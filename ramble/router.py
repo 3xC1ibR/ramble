@@ -42,7 +42,8 @@ DECISION_SCHEMA = {
                     "text": {"type": "string", "description": "The item restated cleanly in the user's terms."},
                     "action": {"type": "string", "enum": ["log", "dispatch"]},
                     "dispatch": {
-                        "type": "object",
+                        "type": ["object", "null"],
+                        "description": "Required when action is dispatch, otherwise null.",
                         "additionalProperties": False,
                         "properties": {
                             "name": {"type": "string", "description": "Short thread name, 3-6 words."},
@@ -52,7 +53,7 @@ DECISION_SCHEMA = {
                         "required": ["name", "cwd", "prompt"],
                     },
                 },
-                "required": ["kind", "text", "action"],
+                "required": ["kind", "text", "action", "dispatch"],
             },
         },
         "notify": {
@@ -162,6 +163,49 @@ class Router:
             ]
         )
 
+    def run_triage(self, prompt: str, thought_id: str) -> dict:
+        if self.cfg["triage_backend"] == "codex":
+            return self.run_codex(prompt, thought_id)
+        return self.run_claude(prompt, thought_id)
+
+    def run_codex(self, prompt: str, thought_id: str) -> dict:
+        """Headless Codex: `codex exec` with a strict output schema, YOLO, no session saved."""
+        work = config.TRIAGE_DIR / "tmp"
+        work.mkdir(exist_ok=True)
+        schema_path = work / "decision.schema.json"
+        schema_path.write_text(json.dumps(DECISION_SCHEMA))
+        out_path = work / f"{thought_id}.out.json"
+        cmd = [
+            "codex", "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            # Triage runs are internal plumbing: no hooks, plugins or MCP servers, so they
+            # don't register as Ribbon Field threads or fire notifiers. Auth still comes from ~/.codex.
+            "--ignore-user-config",
+            "--disable", "hooks",
+            "-C", self.cfg["triage_cwd"],
+            "-m", self.cfg["triage_model"] or "gpt-6-astra",
+            "-c", f'model_reasoning_effort="{self.cfg["triage_effort"]}"',
+            "--output-schema", str(schema_path),
+            "-o", str(out_path),
+            "-",
+        ]
+        full = config.TRIAGE_PROMPT.read_text() + "\n\n---\n\n" + prompt
+        proc = subprocess.run(
+            cmd, input=full, capture_output=True, text=True, cwd=self.cfg["triage_cwd"],
+            env=clean_env(), timeout=self.cfg["triage_timeout_s"],
+        )
+        result = out_path.read_text() if out_path.exists() else ""
+        (config.TRIAGE_DIR / f"{thought_id}.json").write_text(
+            json.dumps({"backend": "codex", "cmd": cmd[:-1], "input": prompt, "returncode": proc.returncode,
+                        "result": result, "stdout": proc.stdout[-6000:], "stderr": proc.stderr[-6000:]}, indent=2)
+        )
+        out_path.unlink(missing_ok=True)
+        if proc.returncode != 0 or not result.strip():
+            raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr[-500:] or proc.stdout[-500:]}")
+        return json.loads(result[result.index("{") : result.rindex("}") + 1])
+
     def run_claude(self, prompt: str, thought_id: str) -> dict:
         cmd = [
             "claude",
@@ -209,7 +253,7 @@ class Router:
         conn.execute("UPDATE thoughts SET status='triaging' WHERE id=?", (tid,))
         log.info("triaging %s", tid)
         try:
-            decision = self.run_claude(self.build_input(conn, thought), tid)
+            decision = self.run_triage(self.build_input(conn, thought), tid)
         except Exception as e:  # noqa: BLE001
             log.exception("triage failed %s", tid)
             conn.execute("UPDATE thoughts SET status='error', error=? WHERE id=?", (str(e)[:2000], tid))

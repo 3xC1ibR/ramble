@@ -4,13 +4,13 @@
 
 ```
 mic ─► speech detection ─► FLAC segments ─► local Whisper ─► thoughts ─► triage agent ─► Ribbon Field threads
-       (Silero VAD)        (~/.ramble/audio)   (MLX, ~1s)     (grouped)    (Claude Code)   + digest + notification
+       (Silero VAD)        (~/.ramble/audio)   (MLX, ~1s)     (grouped)    (Codex, Astra)  + digest + notification
 ```
 
 - **Only speech is stored.** Silence is dropped before anything is written. Every utterance is kept as lossless FLAC with its transcript next to it.
 - **Transcription is local and free.** It uses `whisper-large-v3-turbo` via MLX on Apple Silicon and transcribes a 12 s clip in about 1.4 s on the M1 Pro.
-- **Triage runs once per thought.** A thought is a run of speech that ends after 90 s of quiet. A headless Claude Code run (full permissions, cwd `/path/to/projects`) classifies it as `ambient`, `personal`, `log` or `actionable`. For actionable items it writes a self-contained brief.
-- **Dispatches are Ribbon Field threads.** They are YOLO agent-coord threads created by a session named **"Ramble voice dispatcher"**. They appear in the Ribbon Field app like any other thread.
+- **Triage runs once per thought.** A thought is a run of speech that ends after 90 s of quiet. A headless Codex run (`codex exec`, GPT-6-Astra on high reasoning, full permissions, cwd `/path/to/projects`) classifies it as `ambient`, `personal`, `log` or `actionable`. For actionable items it writes a self-contained brief.
+- **Dispatches are Ribbon Field threads.** They are YOLO agent-coord threads on Codex, created by a session named **"Ramble voice dispatcher"**. They appear in the Ribbon Field app like any other thread.
 - **Everything lands in a daily digest** at `~/.ramble/digest/YYYY-MM-DD.md`. You get a macOS notification when something is dispatched.
 
 ## Use it
@@ -80,18 +80,21 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 | `thought_max_s` | 900 | Force-close a very long ramble |
 | `whisper_model` | `mlx-community/whisper-large-v3-turbo` | Any mlx-whisper model |
 | `language` | auto | Set `"en"` to force English |
-| `triage_model` | Claude Code default | e.g. `"sonnet"` for cheaper triage |
+| `triage_backend` | `codex` | `codex` (`codex exec`) or `claude` (`claude -p`) |
+| `triage_model` | `gpt-6-astra` | Model for the chosen backend (e.g. `"sonnet"` with `claude`; `null` = CLI default) |
+| `triage_effort` | `high` | Codex reasoning effort |
+| `dispatch_client` | `codex` | agent-coord client for dispatched threads |
 | `dispatch_daily_cap` | 6 | Max threads spawned per day; above it, items are logged |
 | `notify` / `ntfy_topic` | true / null | macOS notifications; set a topic for ntfy.sh phone pushes |
 
-**Cost:** one triage run with the default model cost about $0.61 and took 12–40 s in testing. Most of that is Claude Code's own system prompt. Transcription costs nothing.
+**Cost and speed:** with Codex and GPT-6-Astra on high, a triage run took 8–15 s and about 28k tokens in testing. The earlier Claude backend (Fable 5.1) cost about $0.61 per run. Transcription costs nothing.
 
 ## Code map
 
 - `ramble/recorder.py`: mic stream, VAD segmenter, FLAC writer, and `ingest_file` (the same path, used for files and tests).
 - `ramble/vad.py`: Silero VAD v5 on onnxruntime, no torch. The model is in `models/silero_vad.onnx` (MIT).
 - `ramble/transcribe.py`: MLX Whisper worker, a hallucination filter, and grouping segments into thoughts.
-- `ramble/router.py`: closes thoughts, runs triage (`claude -p --json-schema`), dispatches via `agent-coord thread create`, writes the digest and sends notifications.
+- `ramble/router.py`: closes thoughts, runs triage (`codex exec --output-schema`, or `claude -p --json-schema`), dispatches via `agent-coord thread create`, writes the digest and sends notifications.
 - `ramble/daemon.py`: wires the threads together; a mic-control thread follows `state.json`.
 - `ramble/app.py`: rumps menu bar UI. `ramble/cli.py`: the `ramble` command.
 - `prompts/triage.md`: the triage agent's instructions (routing rules, project map, dispatch brief format). Edit this to change behavior.

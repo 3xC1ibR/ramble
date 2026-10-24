@@ -6,7 +6,8 @@ Read `README.md` first; it has the architecture, data layout, settings and code 
 - **Test against a throwaway home and spawn no agents:** `RAMBLE_HOME=/tmp/ramble-test` with `{"dispatch_daily_cap": 0}` in its `config.json`, a `ramble run` in that environment, then `ramble say "..."` or `ramble inject "..."`. Don't run a second daemon against `~/.ramble` while the app is running.
 - **After code changes, restart the installed app** with `launchctl kickstart -k gui/$(id -u)/local.ramble`. If you change `macos/` or `launchd/`, re-run `./bin/install`.
 - **Don't open the mic from a terminal or agent shell to test.** Those processes have no mic permission and get silent all-zero audio. Only `Ramble.app` (and its Python child) holds the permission.
-- **Triage runs use `--settings '{"disableAllHooks": true}'`** so they don't register as Ribbon Field threads.
+- **Triage runs must not register as Ribbon Field threads.** Codex triage uses `--ignore-user-config --disable hooks --ephemeral` (without them it loads the agent-coord plugin and creates a "Ramble thought triage" thread). Claude triage uses `--settings '{"disableAllHooks": true}'`.
+- **The decision schema must stay compatible with OpenAI strict structured outputs:** every property is listed in `required`, optional values are nullable, and `additionalProperties` is false.
 - **Dispatches need a caller session**, so they use `--from-session` with ramble's own registered session (`~/.ramble/agent_coord_session`, name "Ramble voice dispatcher").
 - **Behavior changes usually belong in `prompts/triage.md`**, not code. Keep the structured decision schema in `ramble/router.py` in sync with the prompt.
 [historical text removed for privacy]

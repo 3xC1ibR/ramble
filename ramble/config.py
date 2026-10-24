@@ -41,11 +41,13 @@ DEFAULTS = {
     "thought_gap_s": 90.0,  # silence that closes a thought
     "thought_max_s": 900.0,  # force-close long rambles
     # Triage agent
+    "triage_backend": "codex",  # "codex" (codex exec) or "claude" (claude -p)
+    "triage_model": "gpt-6-astra",  # codex: OpenAI model id; claude: e.g. "sonnet"; None = CLI default
+    "triage_effort": "high",  # codex reasoning effort
     "triage_cwd": "/path/to/projects",
-    "triage_model": None,  # None = Claude Code default
     "triage_timeout_s": 900,
     # Dispatch
-    "dispatch_client": "claude",
+    "dispatch_client": "codex",  # agent-coord client for dispatched threads (OpenAI credits)
     "dispatch_daily_cap": 6,  # max agent threads spawned per day
     # Notifications
     "notify": True,
