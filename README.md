@@ -106,7 +106,7 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 | `triage_model` | `gpt-6-astra` | Model for the chosen backend (e.g. `"sonnet"` with `claude`; `null` = CLI default) |
 | `triage_effort` | `high` | Codex reasoning effort |
 | `dispatch_client` | `codex` | agent-coord client for dispatched threads |
-| `dispatch_daily_cap` | 6 | Max threads spawned per day; above it, items are logged |
+| `dispatch_daily_cap` | 30 | Max threads spawned per day; above it, items are logged |
 | `notify` / `ntfy_topic` | true / null | macOS notifications; set a topic for ntfy.sh phone pushes |
 | `tts_url` / `tts_model` | local port 8880 `/v1/audio/speech` / `kokoro` | OpenAI-compatible speech endpoint |
 | `tts_voice` / `tts_speed` | `af_heart` / 1.0 | Installed Kokoro voice and speaking speed |

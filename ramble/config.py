@@ -48,7 +48,7 @@ DEFAULTS = {
     "triage_timeout_s": 900,
     # Dispatch
     "dispatch_client": "codex",  # agent-coord client for dispatched threads (OpenAI credits)
-    "dispatch_daily_cap": 6,  # max agent threads spawned per day
+    "dispatch_daily_cap": 30,  # max agent threads spawned per day (safety valve, not a budget)
     # Notifications
     "notify": True,
     "ntfy_topic": None,  # optional https://ntfy.sh/<topic> for phone pushes
