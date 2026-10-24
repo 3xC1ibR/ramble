@@ -1,0 +1,17 @@
+#!/bin/bash
+# Build ~/Applications/Ramble.app and register it as a launchd login agent.
+set -euo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+APP="$HOME/Applications/Ramble.app"
+PLIST="$HOME/Library/LaunchAgents/local.ramble.plist"
+mkdir -p "$HOME/.ramble/logs" "$HOME/Library/LaunchAgents"
+cd "$REPO" && uv sync -q
+rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
+sed "s|@REPO@|$REPO|" "$REPO/macos/Info.plist" > "$APP/Contents/Info.plist"
+swiftc -O -o "$APP/Contents/MacOS/Ramble" "$REPO/macos/launcher.swift"
+codesign --force --sign - "$APP"
+sed -e "s|@APP@|$APP|" -e "s|@HOME@|$HOME|g" "$REPO/launchd/local.ramble.plist" > "$PLIST"
+launchctl bootout "gui/$(id -u)/local.ramble" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+mkdir -p "$HOME/.local/bin" && ln -sf "$REPO/bin/ramble" "$HOME/.local/bin/ramble"
+echo "Ramble installed: $APP (menu bar), CLI: ramble"

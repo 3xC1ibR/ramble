@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stop Ramble and remove the login agent and app bundle. Keeps ~/.ramble data.
+set -euo pipefail
+launchctl bootout "gui/$(id -u)/local.ramble" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/local.ramble.plist" "$HOME/.local/bin/ramble"
+rm -rf "$HOME/Applications/Ramble.app"
+echo "Ramble removed (data kept in ~/.ramble)"
