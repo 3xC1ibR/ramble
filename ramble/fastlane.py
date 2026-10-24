@@ -25,7 +25,7 @@ from .transcribe import stamp
 log = logging.getLogger("ramble.fast")
 
 # Whisper's usual spellings of the name.
-NAME = re.compile(r"\b(?:hey|hi|ok|okay|yo)?[\s,]*\b(ramble|rambo|rumble|rambel|rambles)\b[\s,.!?]*", re.I)
+NAME = re.compile(r"\b(?:hey|hi|ok|okay|yo)?[\s,]*\b(ramble|rambo|rumble|rambel|rambles|bramble|gramble|rambl)\b[\s,.!?]*", re.I)
 FAST_PROMPT = config.REPO / "prompts" / "fast.md"
 
 REPLY_SCHEMA = {
@@ -162,6 +162,7 @@ class FastLane:
             note = f"[{stamp(time.time())}] (Ramble replied: {reply}{' [handoff: dispatch this]' if ans['handoff'] else ''})"
             conn.execute("UPDATE thoughts SET text=text || char(10) || ? WHERE id=?", (note, tid[0]))
         log.info("fast reply in %.1fs (handoff=%s): %s", time.time() - t0, ans["handoff"], reply)
+        log.info("reply ready %.1fs after he stopped talking", time.time() - seg["ended_at"])
         if not self.cfg.get("fast_speak", True):  # tests
             return
         try:
@@ -170,4 +171,4 @@ class FastLane:
             speech.speak(reply, self.cfg)
         except Exception:  # noqa: BLE001
             log.exception("could not speak fast reply")
-        log.info("spoken %.1fs after request", time.time() - seg["ended_at"])
+        log.info("finished speaking %.1fs after he stopped talking", time.time() - seg["ended_at"])
