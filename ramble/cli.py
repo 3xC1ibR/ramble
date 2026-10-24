@@ -7,7 +7,6 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 import time
 
 from . import config, db, state
@@ -117,14 +116,14 @@ def cmd_ingest(a) -> None:
 
 
 def cmd_say(a) -> None:
-    """Speak text with macOS `say` and push it through the full audio pipeline (testing)."""
-    from .recorder import ingest_file
+    from .speech import speak, synthesize
 
-    with tempfile.TemporaryDirectory() as d:
-        path = f"{d}/say.aiff"
-        subprocess.run(["say", "-o", path, a.text], check=True)
-        ids = ingest_file(path, config.load())
-    print(f"queued {len(ids)} segment(s): {', '.join(ids)}")
+    try:
+        fn = synthesize if a.no_play else speak
+        result = fn(a.text, voice=a.voice, output=a.output)
+    except Exception as exc:
+        sys.exit(f"ramble: speech failed: {exc}")
+    print(f"{'generated' if a.no_play else 'spoke'} via {result.engine}: {result.path} ({result.duration:.2f}s)")
 
 
 def cmd_inject(a) -> None:
@@ -181,8 +180,11 @@ def main() -> None:
     ig = sub.add_parser("ingest", help="push an audio file through VAD + transcription")
     ig.add_argument("path")
     ig.set_defaults(fn=cmd_ingest)
-    sy = sub.add_parser("say", help="test: synthesize speech with `say` and ingest it")
+    sy = sub.add_parser("say", help="speak aloud via Kokoro (macOS say fallback), protected from mic feedback")
     sy.add_argument("text")
+    sy.add_argument("--voice", help="Kokoro voice (default: config tts_voice)")
+    sy.add_argument("--output", help="save generated WAV at this path")
+    sy.add_argument("--no-play", action="store_true", help="only generate the WAV")
     sy.set_defaults(fn=cmd_say)
     ij = sub.add_parser("inject", help="test: create a thought from text (skips audio)")
     ij.add_argument("text")

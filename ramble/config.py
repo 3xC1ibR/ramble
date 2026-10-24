@@ -52,6 +52,14 @@ DEFAULTS = {
     # Notifications
     "notify": True,
     "ntfy_topic": None,  # optional https://ntfy.sh/<topic> for phone pushes
+    # Spoken replies (explicit only; no automatic dispatch acknowledgements)
+    "tts_url": "http://127.0.0.1:8880/v1/audio/speech",
+    "tts_model": "kokoro",
+    "tts_voice": "af_heart",
+    "tts_speed": 1.0,
+    "tts_timeout_s": 30,
+    "tts_fallback_voice": None,  # macOS default voice, or e.g. Samantha
+    "tts_guard_tail_s": 1.0,  # suppress room echo after playback ends
 }
 
 

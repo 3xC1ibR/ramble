@@ -17,6 +17,7 @@ import numpy as np
 import soundfile as sf
 
 from . import config, db
+from .speech import overlaps_playback
 from .vad import CHUNK, SileroVAD
 
 log = logging.getLogger("ramble.recorder")
@@ -86,14 +87,17 @@ class Segmenter:
         self.pre.clear()
 
 
-def save_segment(conn, start_ts: float, audio: np.ndarray, source: str = "mic") -> str:
+def save_segment(conn, start_ts: float, audio: np.ndarray, source: str = "mic") -> str | None:
+    dur = len(audio) / config.SAMPLE_RATE
+    if source == "mic" and overlaps_playback(conn, start_ts, start_ts + dur):
+        log.info("feedback guard: dropped mic segment %.3f..%.3f", start_ts, start_ts + dur)
+        return None
     seg_id = db.new_id()
     day = time.strftime("%Y-%m-%d", time.localtime(start_ts))
     folder = config.AUDIO_DIR / day
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{time.strftime('%H%M%S', time.localtime(start_ts))}-{seg_id[-6:]}.flac"
     sf.write(path, audio, config.SAMPLE_RATE, format="FLAC", subtype="PCM_16")
-    dur = len(audio) / config.SAMPLE_RATE
     conn.execute(
         "INSERT INTO segments (id, started_at, ended_at, duration, audio_path, source) VALUES (?,?,?,?,?,?)",
         (seg_id, start_ts, start_ts + dur, dur, str(path), source),
@@ -193,9 +197,9 @@ class Recorder:
         conn = db.connect()
 
         def on_segment(ts, audio):
-            save_segment(conn, ts, audio)
-            self.last_speech_at = time.time()
-            self.wake.set()
+            if save_segment(conn, ts, audio):
+                self.last_speech_at = time.time()
+                self.wake.set()
 
         seg = Segmenter(self.cfg, on_segment)
         pending = np.zeros(0, dtype=np.float32)
@@ -203,11 +207,23 @@ class Recorder:
         # Periodic input levels in the log: tells "mic delivers silence" (permission/device)
         # apart from "too quiet/far for the VAD".
         win_start, rms_max, vad_max = time.time(), 0.0, 0.0
+        guarded = False
         while True:
             item = self.q.get()
             if item is None:
                 break
             ts, data = item
+            if overlaps_playback(conn, ts, ts + len(data) / config.SAMPLE_RATE):
+                if not guarded:
+                    log.info("feedback guard: dropping mic audio during Ramble playback")
+                guarded = True
+                seg.reset()
+                pending = np.zeros(0, dtype=np.float32)
+                self.level = 0.0
+                continue
+            if guarded:
+                log.info("feedback guard: mic audio resumed")
+                guarded = False
             if not len(pending):
                 pending_ts = ts
             pending = np.concatenate([pending, data])

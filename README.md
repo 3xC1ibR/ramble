@@ -27,6 +27,7 @@ ramble today             # today's digest (what was decided and dispatched)
 ramble thoughts          # recent thoughts with classification
 ramble show <id>         # a thought's transcript, triage decision and dispatches
 ramble retriage <id>     # run triage again (e.g. after an error or a prompt change)
+[historical text removed for privacy]
 ```
 
 **First run:** the first time you turn it on, macOS asks "Ramble would like to access the microphone". Click Allow. If you click Don't Allow, re-enable it in System Settings → Privacy & Security → Microphone → Ramble.
@@ -47,12 +48,23 @@ ramble run         # foreground, no menu bar (debugging). Don't run it alongside
 ## Testing without talking
 
 ```bash
-ramble say "I want a prototype that turns my voice notes into GitHub issues"   # macOS TTS -> full audio pipeline
+ramble say "I want a prototype that turns my voice notes into GitHub issues" --no-play --output /tmp/ramble-test/fixture.wav
+ramble ingest /tmp/ramble-test/fixture.wav                                      # generated audio -> full audio pipeline
 ramble ingest ~/some-recording.m4a                                              # any audio file through VAD + Whisper
 ramble inject "text of a thought"                                               # skip audio; triage + dispatch only
 ```
 
 Use `RAMBLE_HOME=/tmp/ramble-test` to test against a throwaway data dir. You need a `ramble run` with the same `RAMBLE_HOME` to process the queue. Set `"dispatch_daily_cap": 0` in its config to test triage without spawning agents.
+
+## Spoken replies
+
+`ramble say "Got it, the user."` plays a reply through the local Kokoro server at `http://127.0.0.1:8880/v1/audio/speech` using model `kokoro` and voice `af_heart`. Choose another installed Kokoro voice with `--voice af_bella` or `tts_voice` in config. `--output /tmp/reply.wav` chooses the saved WAV path; `--no-play` only generates audio. Generated replies otherwise live in `~/.ramble/speech/` and are retained until removed manually.
+
+If the server is unreachable, times out, or returns invalid audio, Ramble logs a warning and generates a WAV with macOS `say` instead. The fallback uses the system voice, or `tts_fallback_voice` (e.g. `Samantha`). Playback uses `afplay`; synthesis or playback errors exit visibly with a failure. No automatic dispatch acknowledgements are enabled.
+
+[historical text removed for privacy]
+
+[historical text removed for privacy]
 
 ## Data (`~/.ramble`, never in the repo)
 
@@ -66,6 +78,7 @@ Use `RAMBLE_HOME=/tmp/ramble-test` to test against a throwaway data dir. You nee
 | `state.json` | On/off/paused switch (written by the menu and the CLI, polled every second) |
 | `config.json` | Overrides for the defaults in `ramble/config.py` |
 | `agent_coord_session` | Session id of "Ramble voice dispatcher" in agent-coord |
+| `speech/*.wav`, `speech.lock` | Generated replies and cross-process speech serialization |
 
 ## Settings
 
@@ -86,12 +99,18 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 | `dispatch_client` | `codex` | agent-coord client for dispatched threads |
 | `dispatch_daily_cap` | 6 | Max threads spawned per day; above it, items are logged |
 | `notify` / `ntfy_topic` | true / null | macOS notifications; set a topic for ntfy.sh phone pushes |
+| `tts_url` / `tts_model` | local port 8880 `/v1/audio/speech` / `kokoro` | OpenAI-compatible speech endpoint |
+| `tts_voice` / `tts_speed` | `af_heart` / 1.0 | Installed Kokoro voice and speaking speed |
+| `tts_timeout_s` | 30 | Synthesis timeout before macOS fallback |
+| `tts_fallback_voice` | system default | Voice for macOS `say` (`say -v '?'` lists voices) |
+| `tts_guard_tail_s` | 1.0 | Extra mic suppression after playback for room echo |
 
 **Cost and speed:** with Codex and GPT-6-Astra on high, a triage run took 8–15 s and about 28k tokens in testing. The earlier Claude backend (Fable 5.1) cost about $0.61 per run. Transcription costs nothing.
 
 ## Code map
 
 - `ramble/recorder.py`: mic stream, VAD segmenter, FLAC writer, and `ingest_file` (the same path, used for files and tests).
+- `ramble/speech.py`: Kokoro/macOS speech generation, guarded playback, and callable `speak` API.
 - `ramble/vad.py`: Silero VAD v5 on onnxruntime, no torch. The model is in `models/silero_vad.onnx` (MIT).
 - `ramble/transcribe.py`: MLX Whisper worker, a hallucination filter, and grouping segments into thoughts.
 - `ramble/router.py`: closes thoughts, runs triage (`codex exec --output-schema`, or `claude -p --json-schema`), dispatches via `agent-coord thread create`, writes the digest and sends notifications.

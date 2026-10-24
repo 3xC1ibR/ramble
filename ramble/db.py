@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS dispatches (
     status TEXT NOT NULL,                     -- created | skipped_cap | error
     detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS speech_playbacks (
+    id TEXT PRIMARY KEY,
+    started_at REAL NOT NULL,
+    ended_at REAL NOT NULL,
+    audio_path TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS speech_playbacks_end ON speech_playbacks(ended_at);
 """
 
 
