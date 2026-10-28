@@ -19,7 +19,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import config
+from . import config, state
 
 log = logging.getLogger("ramble.delivery")
 APPS = {"ubereats": "Uber Eats", "doordash": "DoorDash"}
@@ -114,6 +114,8 @@ class DeliveryServer(ThreadingHTTPServer):
             return 400, {"error": "device must be 1-64 printable characters"}
         if not isinstance(tone, str) or tone not in ("teasing", "firm"):
             return 400, {"error": "tone must be teasing or firm"}
+        if state.is_paused():
+            return 200, {"status": "suppressed", "reason": "ramble_paused"}
         if not self.busy.acquire(blocking=False):
             return 200, {"status": "suppressed", "reason": "playback_in_progress"}
         try:
@@ -135,6 +137,8 @@ class DeliveryServer(ThreadingHTTPServer):
                     result = speak(text)  # Same HOME, speech lock and feedback guard as app.
                 else:
                     result = self.speaker(text)
+            except state.PausedError:
+                return 200, {"status": "suppressed", "reason": "ramble_paused"}
             except Exception:
                 log.exception("delivery callout failed")
                 # May already have played partially: retain cooldown to prevent a loop.

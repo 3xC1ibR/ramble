@@ -12,7 +12,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-from ramble import config, db, speech
+from ramble import config, db, speech, state
 from ramble.delivery_webhook import DEFAULTS, DeliveryServer, init_secret, load_settings
 
 
@@ -22,6 +22,7 @@ class DeliveryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name).resolve()
         paths = {"HOME": self.home, "DB_PATH": self.home / "ramble.db",
+                 "STATE_PATH": self.home / "state.json",
                  "CONFIG_PATH": self.home / "config.json"}
         paths.update({name: self.home / name.lower() for name in
                       ("AUDIO_DIR", "DIGEST_DIR", "LOG_DIR", "TRIAGE_DIR")})
@@ -40,13 +41,14 @@ class DeliveryTests(unittest.TestCase):
         synth = patch.object(speech, "synthesize", return_value=self.generated)
         self.synth = synth.start()
         self.addCleanup(synth.stop)
-        player = patch.object(speech.subprocess, "run", side_effect=self.player)
+        player = patch("ramble.cue_player.CuePlayer.play_file", side_effect=self.player)
         self.player_mock = player.start()
         self.addCleanup(player.stop)
         self.start_server()
 
-    def player(self, args, **kwargs):
-        self.assertEqual(args, ["/usr/bin/afplay", str(self.wav)])
+    def player(self, path, **kwargs):
+        self.assertEqual(path, self.wav)
+        kwargs['on_start']({'first_frame_mono_s': time.monotonic()})
         conn = db.connect()
         try:
             self.assertTrue(speech.overlaps_playback(conn, time.time(), time.time() + .01))
@@ -87,6 +89,14 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("Uber Eats", body["text"])
         self.synth.assert_called_once()
         self.player_mock.assert_called_once()
+
+    def test_timed_pause_suppresses_callout_without_consuming_cooldown(self):
+        state.write(True, time.time() + 3600)
+        self.assertEqual(self.request(), (200, {"status": "suppressed", "reason": "ramble_paused"}))
+        self.synth.assert_not_called()
+        self.player_mock.assert_not_called()
+        state.write(True)
+        self.assertEqual(self.request()[1]["status"], "spoken")
 
     def test_missing_wrong_and_unicode_credentials_do_not_speak_or_consume_cooldown(self):
         for token in (False, "wrong", "caf\xe9"):

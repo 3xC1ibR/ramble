@@ -1,0 +1,14 @@
+title = "Ramble secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "curl-auth-header"
+
+[[rules.allowlists]]
+description = "Exact dummy header used to verify that trace logs redact credentials"
+condition = "AND"
+paths = ['''(^|/)tests/test_fast_trace\.py$''']
+regexTarget = "line"
+regexes = ['''^\s*command = 'curl https://wttr\.in/Example -H "Authorization: Bearer private-token"'$''']

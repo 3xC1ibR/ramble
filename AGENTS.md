@@ -2,6 +2,21 @@
 
 Read `README.md` first; it has the architecture, data layout, settings and code map.
 
+## Companion experience
+
+[historical text removed for privacy]
+understand and steer the work. Treat the active session and its visual results as
+one workspace. For “show me how FooBar works,” show actual code and useful
+diagrams while explaining briefly aloud. Publish useful visuals during work,
+not only at the final answer. Keep the visual visible through spoken progress;
+conversation text belongs in secondary history. Follow new visuals live unless
+[historical text removed for privacy]
+`prompts/work-session.md`, `prompts/fast.md` and `prompts/triage.md` consistent.
+Companion lives in the sibling `ramble-ipad-display` project; preserve automatic
+updates and reconnect recovery.
+
+## Development rules
+
 - **Runtime data lives in `~/.ramble`; never write it into the repo.** To debug a decision, look at `ramble show <id>` and `~/.ramble/triage/<id>.json`, which hold the exact triage input and Claude output.
 - **Test against a throwaway home and spawn no agents:** `RAMBLE_HOME=/tmp/ramble-test` with `{"dispatch_daily_cap": 0}` in its `config.json`, a `ramble run` in that environment, then `ramble say "..."` or `ramble inject "..."`. Don't run a second daemon against `~/.ramble` while the app is running.
 - **After code changes, restart the installed app** with `launchctl kickstart -k gui/$(id -u)/local.ramble`. If you change `macos/` or `launchd/`, re-run `./bin/install`.

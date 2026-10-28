@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Silent saved-audio latency benchmark. Never starts a daemon or plays audio."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import resource
+import sys
+import threading
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("audio", type=Path, help="existing 16 kHz recording")
+    parser.add_argument("--idle-s", type=float, default=600)
+    parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument("--baseline", action="store_true", help="disable residency and keep MLX's original cache")
+    parser.add_argument("--output", type=Path, required=True, help="JSONL results outside the repository")
+    args = parser.parse_args()
+    if not 0 <= args.idle_s <= 3600 or not 1 <= args.cycles <= 10:
+        parser.error("idle-s must be 0–3600 and cycles must be 1–10")
+    if not os.environ.get("RAMBLE_HOME"):
+        parser.error("set RAMBLE_HOME to a throwaway test home")
+    from ramble import config
+    if config.HOME.resolve() == (Path.home() / ".ramble").resolve():
+        parser.error("do not benchmark against the live Ramble home")
+    if config.HOME.resolve().is_relative_to(config.REPO):
+        parser.error("keep the throwaway RAMBLE_HOME outside the repository")
+    if args.output.resolve().is_relative_to(config.REPO):
+        parser.error("write benchmark results outside the repository")
+    cfg = config.load()
+    if cfg.get("dispatch_daily_cap") != 0 or cfg.get("fast_speak", True) or cfg.get("speak_questions", True):
+        parser.error("test config must set dispatch_daily_cap=0, fast_speak=false, speak_questions=false")
+    if args.baseline:
+        cfg.update(whisper_wired_mb=0, whisper_cache_mb=None, whisper_residency_refresh_ms=0)
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    from ramble.transcribe import Transcriber
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    worker = Transcriber(cfg, threading.Event())
+    transcript_file = args.audio.with_suffix(".txt")
+    expected = transcript_file.read_text().strip() if transcript_file.exists() else None
+    with args.output.open("x") as output:
+        def emit(event, **fields):
+            row = {"event": event, "wall_s": time.time(), "pid": os.getpid(), **fields}
+            line = json.dumps(row)
+            output.write(line + "\n")
+            output.flush()
+            print(line, flush=True)
+
+        class TraceHandler(logging.Handler):
+            def emit(self, record):
+                message = record.getMessage()
+                if message.startswith("latency "):
+                    emit("latency", **json.loads(message[len("latency "):]))
+
+        logger = logging.getLogger("ramble.latency")
+        handler = TraceHandler()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        def decode(label):
+            nonlocal expected
+            started = time.perf_counter()
+            result = worker.transcribe_path(str(args.audio), segment_id=label)
+            elapsed = time.perf_counter() - started
+            transcript = result["text"].strip()
+            if expected is None:
+                expected = transcript
+            matches = transcript == expected
+            emit("request", label=label, elapsed_s=elapsed, transcript_matches=matches,
+                 transcript_sha256=hashlib.sha256(transcript.encode()).hexdigest(), **worker.memory.snapshot())
+            if not matches:
+                raise RuntimeError("transcript differs from the saved transcript or initial decode")
+
+        try:
+            emit("start", baseline=args.baseline, idle_s=args.idle_s, cycles=args.cycles,
+                 model=cfg["whisper_model"], audio=str(args.audio.resolve()))
+            worker.warmup()
+            decode("warm_1")
+            decode("warm_2")
+            for cycle in range(1, args.cycles + 1):
+                start = time.monotonic()
+                usage = resource.getrusage(resource.RUSAGE_SELF)
+                emit("idle_start", cycle=cycle, **worker.memory.snapshot())
+                next_progress = 60
+                while (remaining := args.idle_s - (time.monotonic() - start)) > 0:
+                    time.sleep(min(30, remaining))
+                    elapsed = time.monotonic() - start
+                    if elapsed >= next_progress:
+                        emit("idle_progress", cycle=cycle, elapsed_s=elapsed)
+                        next_progress += 60
+                after = resource.getrusage(resource.RUSAGE_SELF)
+                emit("idle_end", cycle=cycle, elapsed_s=time.monotonic() - start,
+                     cpu_s=after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime,
+                     **worker.memory.snapshot())
+                decode(f"after_idle_{cycle}")
+                decode(f"warm_after_idle_{cycle}")
+            emit("completed")
+        finally:
+            worker.memory.close()
+            logger.removeHandler(handler)
+
+
+if __name__ == "__main__":
+    main()

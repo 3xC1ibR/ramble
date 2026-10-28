@@ -1152,6 +1152,7 @@ dependencies = [
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "rumps" },
+    { name = "scipy" },
     { name = "sounddevice" },
     { name = "soundfile" },
 ]
@@ -1162,6 +1163,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "onnxruntime", specifier = ">=1.31.0" },
     { name = "rumps", specifier = ">=0.4.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
     { name = "sounddevice", specifier = ">=0.5.6" },
     { name = "soundfile", specifier = ">=0.14.0" },
 ]

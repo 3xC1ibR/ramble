@@ -1,0 +1,3 @@
+#!/bin/bash
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" exec "$REPO/.venv/bin/python" -m ramble.time_entries "$@"

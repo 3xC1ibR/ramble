@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from . import config, db, state
+from . import config, db, state, voice_control
 
 
 def parse_duration(s: str) -> float:
@@ -44,6 +44,7 @@ def cmd_toggle(a) -> None:
 def cmd_status(a) -> None:
     conn = db.connect()
     print(f"state: {state.describe()}")
+    print(f"voice responses: {'on' if voice_control.read()['enabled'] else 'off'}")
     running = subprocess.run(["pgrep", "-f", "ramble.(app|cli run)"], capture_output=True, text=True).stdout.split()
     print(f"app process: {'running (pid ' + ', '.join(running) + ')' if running else 'NOT running (ramble install / ramble run)'}")
     today = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
@@ -58,6 +59,11 @@ def cmd_status(a) -> None:
     if last:
         print(f"last heard: {fmt(last[0])} {last[1][:100]}")
     print(f"data: {config.HOME}")
+
+
+def cmd_voice(a) -> None:
+    saved = voice_control.read() if a.setting == "status" else voice_control.write(a.setting == "on")
+    print(f"ramble: voice responses {'on' if saved['enabled'] else 'off'}; mic {state.describe()}")
 
 
 def cmd_today(a) -> None:
@@ -109,9 +115,9 @@ def cmd_tail(a) -> None:
 
 
 def cmd_ingest(a) -> None:
-    from .recorder import ingest_file
+    from .recorder import ingest_file, ingest_companion
 
-    ids = ingest_file(a.path, config.load())
+    ids = [ingest_companion(a.path)] if a.companion else ingest_file(a.path, config.load())
     print(f"queued {len(ids)} segment(s) for the running app: {', '.join(ids)}")
 
 
@@ -162,6 +168,9 @@ def main() -> None:
     off.set_defaults(fn=cmd_off)
     sub.add_parser("toggle", help="flip on/off").set_defaults(fn=cmd_toggle)
     sub.add_parser("status", help="state and today's counts").set_defaults(fn=cmd_status)
+    voice = sub.add_parser("voice", help="control voice responses independently of transcription")
+    voice.add_argument("setting", choices=("on", "off", "status"), nargs="?", default="status")
+    voice.set_defaults(fn=cmd_voice)
     t = sub.add_parser("today", help="print today's digest")
     t.add_argument("date", nargs="?", help="YYYY-MM-DD")
     t.set_defaults(fn=cmd_today)
@@ -179,10 +188,11 @@ def main() -> None:
     tl.set_defaults(fn=cmd_tail)
     ig = sub.add_parser("ingest", help="push an audio file through VAD + transcription")
     ig.add_argument("path")
+    ig.add_argument("--companion", action="store_true", help="queue a deliberate Companion voice request")
     ig.set_defaults(fn=cmd_ingest)
-    sy = sub.add_parser("say", help="speak aloud via Kokoro (macOS say fallback), protected from mic feedback")
+    sy = sub.add_parser("say", help="speak via the configured TTS provider (macOS fallback), protected from mic feedback")
     sy.add_argument("text")
-    sy.add_argument("--voice", help="Kokoro voice (default: config tts_voice)")
+    sy.add_argument("--voice", help="Kokoro voice name or ElevenLabs voice ID (default: provider config)")
     sy.add_argument("--output", help="save generated WAV at this path")
     sy.add_argument("--no-play", action="store_true", help="only generate the WAV")
     sy.set_defaults(fn=cmd_say)

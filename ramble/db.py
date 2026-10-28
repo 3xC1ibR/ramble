@@ -53,6 +53,23 @@ CREATE TABLE IF NOT EXISTS dispatches (
     detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_claims (
+ segment_id TEXT PRIMARY KEY, session_id TEXT, status TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS session_launches (id TEXT PRIMARY KEY, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS session_input_batches (
+ id TEXT PRIMARY KEY, segment_ids TEXT NOT NULL, session_id TEXT,
+ status TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS speech_origins (playback_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS action_requests (
+ id TEXT PRIMARY KEY, session_id TEXT, epoch INTEGER, items TEXT NOT NULL,
+ text TEXT NOT NULL, family TEXT NOT NULL, operation TEXT NOT NULL,
+ status TEXT NOT NULL, reply TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS action_requests_status ON action_requests(status,created_at);
+
 CREATE TABLE IF NOT EXISTS speech_playbacks (
     id TEXT PRIMARY KEY,
     started_at REAL NOT NULL,
