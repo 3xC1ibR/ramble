@@ -1,6 +1,7 @@
 # Delivery-app callouts
 
-[historical text removed for privacy]
+With this optional integration configured, open Uber Eats or DoorDash on an iPhone
+or iPad → a Shortcuts automation posts
 an authenticated event → Ramble speaks a short callout on the Mac. No AI triage,
 agent launch, microphone input, or change to the listening switch is needed.
 
@@ -13,15 +14,15 @@ and all devices, including rapid retries and restarts.
 - Endpoint: `https://device.example.ts.net/ramble-delivery/delivery-open`
 - Private token file: `~/.ramble/delivery-webhook.token` (mode 600).
 - Login service: `local.ramble.delivery-webhook`, listening only on `127.0.0.1:8789`.
-[historical text removed for privacy]
+- Tailscale Serve mounts `/ramble-delivery`; preserve any unrelated routes.
 - Logs: `~/.ramble/logs/delivery-webhook.log`.
 - Persistent cooldown: `~/.ramble/delivery-webhook.sqlite3`.
 
 The iPhone/iPad must have Tailscale connected to the same tailnet and permission
 to reach this Mac on HTTPS port 443. This also works away from home over cellular
 or another Wi-Fi network, subject to connectivity and tailnet access rules.
-[historical text removed for privacy]
-[historical text removed for privacy]
+Configure and verify each intended device separately. Tailscale Serve provides
+tailnet access without creating a public internet endpoint.
 
 The Mac must be awake, logged in, reachable over Tailscale, and have audible
 output volume. Playback uses Ramble's configured Kokoro voice, with its macOS
@@ -51,7 +52,8 @@ An automation selects one app so its request can name that app explicitly.
    leave **Is Closed** off. Select **Run Immediately**. On older versions,
    turn **Ask Before Running** off and confirm **Don't Ask**. Tap **Next**.
 5. Choose **New Blank Automation** (or **Add Action**), then add **Get Contents
-[historical text removed for privacy]
+   of URL**. Enter your Mac's Tailscale HTTPS endpoint with the
+   `/ramble-delivery/delivery-open` path; the hostname above is a placeholder.
 6. Expand the action (**Show More** or the disclosure arrow). Set:
 
    | Setting | Value |
@@ -120,7 +122,8 @@ Missing/wrong credentials return 401; malformed/unsupported payloads return
 400; wrong content type returns 415; absent/oversized body returns 413; unknown
 paths return 404. Authorization is checked before parsing the payload.
 
-[historical text removed for privacy]
+Safe installed-service health check (replace the example hostname; no audio,
+token stays inside Python):
 
 ```sh
 python3 - <<'PY'
@@ -152,7 +155,7 @@ Settings live separately in `~/.ramble/delivery-webhook.json`. For example:
 
 `cooldown_s` accepts 10–3600 seconds. If overriding `callouts`, provide both
 nonempty lists; each line is at most 240 characters and may use `{app}`. Keep
-[historical text removed for privacy]
+messages brief and about the selected app-opening event. The setup's explicit `tone` field
 overrides the server tone; omit it to follow server changes. Ramble's normal
 `~/.ramble/config.json` controls the TTS voice. Settings are loaded at service
 startup; restart after changing them:
@@ -171,7 +174,7 @@ cd <ramble-checkout>
 ```
 
 To rotate the credential, remove `~/.ramble/delivery-webhook.token`, rerun the
-[historical text removed for privacy]
+installer, and replace the Authorization value in every configured automation. No
 credentials are stored in the repository or launchd plist.
 
 To stop/remove just this integration:
@@ -185,11 +188,11 @@ rm -f ~/Library/LaunchAgents/local.ramble.delivery-webhook.plist
 
 Disable/delete the device automations as well. Ramble's general `bin/uninstall`
 does not remove this separate opt-in service. Do not use `tailscale serve reset`
-[historical text removed for privacy]
+or disable port 443 globally: other apps may use existing routes.
 
-[historical text removed for privacy]
+## Historical implementation verification
 
-[historical text removed for privacy]
+- The suite at implementation time passed **14 tests** using
   `.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -v`.
   They exercise real HTTP requests, actual `speech.speak` and its SQLite guard,
   invalid auth/payloads, concurrent calls, retry cooldown, restart persistence,
@@ -201,14 +204,14 @@ does not remove this separate opt-in service. Do not use `tailscale serve reset`
   returned 401; an Uber Eats/iPad duplicate was suppressed; one player call.
 - Evidence and generated WAV are in `/tmp/ramble-delivery-verification/`
   (`verification.json`). This temporary evidence may disappear on cleanup/reboot.
-[historical text removed for privacy]
+- The test installation's launchd service ran. Through its **Tailscale HTTPS
   route**, authenticated health returned 200, missing auth returned 401, and an
   authenticated unsupported app returned 400. Existing Serve routes survived.
 - **No audible test playback or microphone access was performed**, following
   repository instructions. The integration proves the audio reaches the guarded
   player invocation, with that process replaced by a probe. Actual speaker
-[historical text removed for privacy]
-[historical text removed for privacy]
+  output and automatic app-open behavior require verification on each configured
+  device with steps 7–8 above; these checks do not establish any user's setup.
 
 ## Official references checked
 

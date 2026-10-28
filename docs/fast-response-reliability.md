@@ -1,6 +1,6 @@
 # Fast-response diagnostics
 
-[historical text removed for privacy]
+## Input-delivery failure
 
 The voice responder polled `Popen.communicate(input=prompt)` with a 0.1-second
 timeout, then called `communicate(input=None)` on later polls. If the first poll
@@ -34,14 +34,12 @@ follow-up window. A still-pending notice is cancelled when the answer arrives or
 fails. The terminal error explicitly names Codex; it is fixed application text,
 not a model-generated explanation of the failure.
 
-[historical text removed for privacy]
+## Deep-reasoning timeout
 
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+One affected request combined 13 accepted speech fragments; the last fragment
+alone did not represent the full request. An earlier invocation completed in
+23.13 seconds and was superseded by a continuation. The final invocation used
+`gpt-6-astra` / `max`, a 29,157-byte prompt, and a 30-second deadline.
 It emitted `thread.started` and `turn.started`, then reached that deadline with
 no tool or answer events. This is not the earlier stdin-delivery deadlock. The
 trace cannot distinguish provider waiting from unreported model reasoning.
@@ -54,7 +52,7 @@ are resolved per invocation, so a live model change gets the matching budget.
 Cancellation, the early wait notice, process-group termination, rate-limit
 backoff and the prohibition on automatic retries remain in effect.
 
-[historical text removed for privacy]
+The investigation also exposed premature success bookkeeping. Background triage
 logged ownership before the fast call finished, and Companion's legacy wording
 rendered that as “answered directly.” `input_receipts.py` now derives generated
 log summaries from claims, updates them after input outcomes, and repairs old
@@ -74,11 +72,11 @@ snapshots; current thought records and Companion receive the repaired status.
    `speech_job_end` in the rotating log. Speech workers recover the original
    request ID from the thought; `speech_job_id` links queue and delivery receipts.
 
-[historical text removed for privacy]
+For example, substitute IDs from your own private diagnostic record:
 
 ```bash
-[historical text removed for privacy]
-[historical text removed for privacy]
+rg -F '<segment-or-request-id>' ~/.ramble/logs/ramble.log ~/.ramble/triage/fast
+ramble show '<thought-id>'
 ```
 
 Each trace records model/effort, deadline, prompt byte count, executable path,

@@ -66,7 +66,7 @@ played/failed/cancelled receipts. No fallback replays the file with `afplay`.
 Events preserve request and playback IDs without logging speech text. A shared
 helper PID in `audio output ready` confirms that later replies reuse the stream.
 
-[historical text removed for privacy]
+## Historical implementation validation
 
 128 focused tests passed without speaker playback, microphone capture or agent
 dispatch. Tests used throwaway homes; the helper protocol tests ran the real
@@ -100,13 +100,12 @@ Warm start timing assertions exercise the protocol with a simulated output
 device; they are not measurements of audible latency at the Mac's speakers.
 No new claim about end-to-end response latency is inferred from them.
 
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-helper exited. Both microphone and voice-state file hashes were unchanged.
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+After an installed-app restart, the replacement Python worker's shared output
+helper reported callback readiness and Whisper started successfully. The previous
+output helper exited. Both microphone and voice-state file hashes were unchanged.
+This checked the real device's idle callback health without playing test speech.
+The receipt was saved in a throwaway test home outside the repository; retain
+new verification receipts privately, since temporary evidence can be cleaned up.
 
 References: [sounddevice callback and DAC timing](https://python-sounddevice.readthedocs.io/en/0.5.6/api/streams.html),
 [SciPy polyphase resampling](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.resample_poly.html).

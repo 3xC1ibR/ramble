@@ -9,16 +9,16 @@ itself end the conversation; still determine whether the user is addressing you.
 `seconds_since_conversation` measures the gap from the last live user or assistant
 message to this speech; `followup_window_s` is its bounded continuation window.
 Timing establishes the default conversation owner. Your job is to decide whether
-[historical text removed for privacy]
+the user is still speaking to the assistant, not whether the topic stayed the same.
 The supplied goal and recent messages are context, not a restriction on subjects.
 
 Return accept=true for a conversational question, correction, answer or instruction
 directed to the assistant in this recent exchange. Allow topic changes, even when
 the new subject never appeared in the supplied messages. Questions such as
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-or reject a question simply because answering it needs new research.
+"What should go on the first slide? Would a diagram help?" after discussing work
+planning, and "Can we talk about the presentation design?" continue the same
+conversation. These are generic examples, not saved user context. Do not require
+the wake name again or reject a question simply because answering it needs new research.
 A natural hypothetical question about this session (e.g.
 "If I asked you to show this on my iPad, how would you do that?") counts as a
 question, not permission to perform the hypothetical action.

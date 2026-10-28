@@ -27,7 +27,7 @@ for every possible phrasing; shared prompt guidance applies beyond these pattern
 The fast worker consumes internal transfers separately from live speech
 coalescing. Transfers retain their identity across restart and cannot replay
 completed or uncertain writes. The existing adapter journals provide external
-[historical text removed for privacy]
+write receipts. Historical requests are not automatically retried.
 
 ## Outcomes
 

@@ -95,10 +95,10 @@ Inspect `vmmap -summary <benchmark-pid>` during idle to compare swapped model
 memory. Use longer idle windows and ordinary real load when validating the
 reported multi-second stalls. Warm timings alone cannot validate this change.
 
-[historical text removed for privacy]
+## Historical implementation validation
 
-[historical text removed for privacy]
-[historical text removed for privacy]
+The saved 19.36-second recording used to investigate the slow interaction was
+decoded on a 16 GB M1 Pro with MLX 0.32.4 and the existing large-v3-turbo model.
 The two recognition passes and exact transcript remained unchanged. Tests used
 separate processes and a throwaway home, without recording or playing audio.
 
@@ -134,18 +134,16 @@ They cover hardware bounds, unsupported controls, off/resume/shutdown behavior,
 unchanged name confirmation, failure diagnostics and the single-daemon guard.
 The benchmark also rejects a repository-local test home before creating files.
 
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+An installed-app restart loaded the final recognition implementation. Its Python
+worker logged the intended limits and successful Whisper startup, then remained
+running throughout the valid comparison. At roughly twenty minutes uptime, its
+memory map still reported 1.5 GiB dirty graphics buffers and 87.4 MiB swapped.
+A restart after the benchmarks logged the same limits and successful startup.
+The microphone-state file was unchanged across both checks.
 
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+Raw traces and memory maps were saved in a throwaway test home outside the
+repository. For a new run, retain the chosen output paths privately alongside
+the benchmark settings; temporary evidence can disappear on cleanup or reboot.
 These measurements isolate recognition time; they do not measure the subsequent
 responder, synthesis or speaker playback delay.
 

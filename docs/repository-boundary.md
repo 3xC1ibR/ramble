@@ -27,8 +27,14 @@ was already committed.
 Personal context belongs in the local Global instructions editor, not in source
 files or examples. Location, project paths and recognition vocabulary can be
 configured locally. Never commit recordings, transcripts, databases, credentials,
-[historical text removed for privacy]
-history after a rewrite; publishing a repository needs a separate privacy,
+or machine-specific network names. Use synthetic dialogue in prompts, documentation
+and test fixtures; replacing a name alone does not remove details about routines,
+relationships, events, or plans. Describe diagnostic failures by their technical
+conditions and results, without quoting private speech or copying real request IDs,
+device inventories, or personal schedules. Keep original evidence in the private
+runtime home or a throwaway test home outside Git.
+
+Existing clones and backups can contain old history after a rewrite; publishing a repository needs a separate privacy,
 licensing and third-party model notice review.
 
 ## Dependencies and location assumptions

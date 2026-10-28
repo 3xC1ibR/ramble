@@ -144,6 +144,8 @@ Turn it off for guests, calls and movies. The triage prompt also treats TV, othe
 
 ## Talking to Ramble (fast lane)
 
+The spoken requests below are generic usage examples, not captured conversations.
+
 Say its name to address Ramble: "Ramble, what's the weather?", "hey Ramble, what are my agents doing?", or "...right, Ramble?" at the end of a sentence. With a known foreground conversation, ordinary requests go directly to its owner without a routing-model call or queued acknowledgement. Otherwise the fast responder answers or chooses an owner. A bare "Ramble?" waits up to 8 s for the request. For 20 s after a direct reply, you can follow up without the name. Background work updates do not open that window.
 
 A quick exchange can grow into a persistent conversation: **“Ramble, let's keep
@@ -204,7 +206,7 @@ a connected foreground session that is running or idle and has not been quieted.
 A separate read-only classifier must first recognize a conversational question,
 correction, answer or instruction directed to the assistant. Recent timing selects
 the existing owner; topic changes stay in that conversation, including moving
-[historical text removed for privacy]
+from work planning to presentation design. The classifier receives the elapsed
 time since the last live exchange and the bounded follow-up window. Topic overlap
 alone does not establish an address; ambient commentary, quoted speech and
 ambiguous fragments are rejected. The
@@ -290,7 +292,7 @@ replies still suppress mic capture during playback; the chime itself does not.
 
 - `ramble/fastlane.py` detects addressing, using the name regex (Whisper spellings like "Rambo" and "rumble" count, "rambling" doesn't) or the follow-up window from `speech_playbacks`. It runs a quick `codex exec` (`fast_model` gpt-6.1-sol, low effort, cwd `~/.ramble`, prompt `prompts/fast.md`) and classifies the reply or work route. Speech delivery runs separately from input and execution.
 - **Work together or delegate.** Collaborative research, writing and coding stay in a persistent work session. Independent background outcomes can go to a separate agent. Follow-ups keep their existing owner; an explicitly named existing agent is reused. Quick answers and structured reminder/time-entry actions remain immediate.
-[historical text removed for privacy]
+- **"Ramble, pull up X" shows X in Companion.** It calls `<companion-checkout>/bin/publish`; see that repo's README. Dispatched agents are told to publish visual results there too.
 - **Delivery is recorded separately.** Fast replies are queued to a speech worker, with played/failed/cancelled receipts. Accepted addressed speech is durably claimed before classification, so slow triage cannot repeat it when speech or execution is delayed.
 - **Failures are explicit.** The responder's automatic hard deadline follows the
   selected reasoning effort: 30 seconds for low/minimal/none, 60 for medium,
@@ -349,7 +351,7 @@ Use `RAMBLE_HOME=/tmp/ramble-test` to test against a throwaway data dir. You nee
 
 ## Reminders through Stoic
 
-[historical text removed for privacy]
+Say **“Ramble, remind me to review the draft tomorrow at four PM.”** The fast lane
 saves the reminder in Stoic immediately after the request finishes, then confirms
 the saved date and time. It does not wait for thought triage or create a worker.
 Stoic delivers its existing phone notifications independently of this Mac.
