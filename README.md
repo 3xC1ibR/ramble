@@ -1,8 +1,8 @@
 # ramble
 
-[historical text removed for privacy]
+Ambient voice capture for your laptop. Turn it on, think out loud, and an agent works out what to do with what you said.
 
-[historical text removed for privacy]
+See the
 [repository boundary and privacy review](docs/repository-boundary.md) for what
 is stored in Git, the runtime dependencies, and why the installed checkout path
 stays unchanged.
@@ -16,7 +16,7 @@ mic ─► speech detection ─► FLAC segments ─► local Whisper ─► tho
 - **Only speech is stored.** Silence is dropped before anything is written. Every utterance is kept as lossless FLAC with its transcript next to it.
 - **Transcription is local and free.** It uses `whisper-large-v3-turbo` via MLX on Apple Silicon and transcribes a 12 s clip in about 1.4 s on the M1 Pro.
 - **Recognition hints:** English and a short list of names/project terms are supplied to Whisper. When hinted text contains an address, a second pass without hints must also recognize the name or one of its known mishearings; otherwise the unhinted transcript is kept. This prevents hints from turning ordinary speech such as "Right, but..." into a wake name. That confirmation adds one local decode for addressed clips.
-[historical text removed for privacy]
+- **Triage runs once per thought.** A thought is a run of speech that ends after 90 s of quiet. Jev first checks the entire unclaimed thought. Confidently background or casual speech gets a simple digest entry without running Codex; useful notes, possible tasks and uncertainty go to headless Codex (`codex exec`, GPT-6-Astra on high reasoning, full permissions, cwd from `triage_cwd`) for a summary, classification and any self-contained work brief.
 - **Dispatches are Ribbon Field threads.** They are YOLO agent-coord threads on Codex, created by a session named **"Ramble voice dispatcher"**. They appear in the Ribbon Field app like any other thread.
 - **Everything lands in a daily digest** at `~/.ramble/digest/YYYY-MM-DD.md`. You get a macOS notification when something is dispatched.
 
@@ -102,7 +102,7 @@ ramble today             # today's digest (what was decided and dispatched)
 ramble thoughts          # recent thoughts with classification
 ramble show <id>         # a thought's transcript, triage decision and dispatches
 ramble retriage <id>     # run triage again (e.g. after an error or a prompt change)
-[historical text removed for privacy]
+ramble say "Got it."  # speak aloud; never ingest the reply as a thought
 ```
 
 **Mute voice responses while keeping transcription:** say **“Disable voice
@@ -175,8 +175,8 @@ Set `chat_followup_s` to shorten the window (maximum 600 seconds), or zero to
 disable it. Jev receives only the candidate speech and up to eight recent addressed
 messages, each capped at 4,000 characters. Behavior is in
 `prompts/chat-followup.json`. Authentication uses `JEV_API_KEY`, then
-[historical text removed for privacy]
-[historical text removed for privacy]
+`TYPESAFE_API_KEY`, then `jev_api_key_file` (for example,
+`~/.config/ramble/jev-key`); setting that file option to null allows
 `JEV_API_KEY_FILE` or `TYPESAFE_API_KEY_FILE`. Keep the credential outside the repo
 and config. The pinned model is `jev-1.13.0`, with a three-second timeout and a
 30-second cooldown after service failure. There are no automatic API retries.
@@ -363,14 +363,14 @@ Use Ramble's name or an active conversational follow-up; passive thoughts do not
 silently schedule reminders.
 
 The Companion's **Reminders** page lists the same Stoic records and supports
-[historical text removed for privacy]
+create, reschedule, done and cancel. Times use the configured timezone, including when
 the iPad is in another timezone. A local time skipped or repeated by daylight
 saving needs a different time or an explicit offset. The Stoic list API exposes
 only the newest 200 jobs; Companion shows a notice if that bound is reached.
 
 Authentication uses `STOIC_API_TOKEN`, then `STOIC_API_TOKEN_FILE`, then
 `~/.config/stoic/codex-token`. Credentials remain on the Mac. The read-only helper
-[historical text removed for privacy]
+`<ramble-checkout>/bin/reminders list` supplies current IDs for the
 fast responder. Mutations are structured output, executed by `ramble/reminders.py`
 only after request coalescing; they must not be performed through model shell calls.
 Fast replies are replaced with confirmed tool results, and action receipts are
@@ -443,14 +443,14 @@ not precise acoustic boundaries. For true wake-to-speech latency, record one
 interaction on an external phone/recorder, marking wake onset, request end and
 first spoken reply in that single recording. Exclude the acknowledgement chime.
 
-[historical text removed for privacy]
+`ramble say "Got it."` plays a reply through the configured speech provider. The default is the local Kokoro server at `http://127.0.0.1:8880/v1/audio/speech` using model `kokoro` and voice `af_heart`. Choose another installed Kokoro voice with `--voice af_bella` or `tts_voice` in config. `--output /tmp/reply.wav` chooses the saved WAV path; `--no-play` only generates audio. Generated replies otherwise live in `~/.ramble/speech/` and are retained until removed manually.
 
 For ElevenLabs, merge these overrides into `~/.ramble/config.json` and restart the app:
 
 ```json
 {
   "tts_provider": "elevenlabs",
-[historical text removed for privacy]
+  "elevenlabs_api_key_file": "~/.config/ramble/elevenlabs-key",
   "elevenlabs_voice_id": "CwhRBWXzGAHq8TQ4Fs17",
   "elevenlabs_model": "eleven_flash_v2_5",
   "elevenlabs_stability": 0.75,
@@ -466,9 +466,9 @@ The API key is read from that file for each request, never copied into config. K
 
 If the provider is unreachable, times out, rejects the credentials, or returns invalid audio, Ramble logs a warning and generates a WAV with macOS `say` instead. The fallback uses the system voice, or `tts_fallback_voice` (e.g. `Samantha`). Playback uses `afplay`; synthesis or playback errors exit visibly with a failure. No automatic dispatch acknowledgements are enabled.
 
-[historical text removed for privacy]
+Python callers use `from ramble.speech import speak; speak("Got it.")`. It blocks until playback ends and returns the audio path, engine, and duration. `synthesize(...)` generates without playback, and `play_audio(path)` applies the feedback guard to an existing audio file. Use the same `RAMBLE_HOME` as the listening app so they share the guard.
 
-[historical text removed for privacy]
+Before playback, Ramble commits a bounded window to `speech_playbacks` in its SQLite database. The mic worker drops chunks overlapping that window, resets VAD/padding, and also rejects overlapping complete segments before writing audio. Windows remain available for delayed recorder queues; a one-second tail covers room echo. This leaves `state.json` and the mic permission alone, and recovers automatically after a crashed player. Logs contain `feedback guard` drop/resume messages. Speech spoken by the user during a playback window is also dropped; unrelated players and explicit `ingest` imports are not covered. A longer echo tail can be configured for reverberant rooms.
 
 **Delivery-app callouts:** an optional authenticated webhook lets iPhone/iPad Shortcuts app-open automations trigger a teasing or firm Uber Eats/DoorDash callout on the Mac, with a shared cooldown. See [setup, configuration and verification](docs/delivery-callouts.md); each device needs its own automations.
 
@@ -533,7 +533,7 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 | `thought_max_s` | 900 | Force-close a very long ramble |
 | `whisper_model` | `mlx-community/whisper-large-v3-turbo` | Any mlx-whisper model |
 | `language` | `en` | English by default; set `null` for auto-detection |
-[historical text removed for privacy]
+| `whisper_initial_prompt` | `Ramble, Ribbon Field, Stoic, ElevenLabs.` | Vocabulary hints for names and project terms; set `null` or `""` to disable |
 | `triage_backend` | `codex` | `codex` (`codex exec`) or `claude` (`claude -p`) |
 | `triage_model` | `gpt-6-astra` | Model for the chosen backend (e.g. `"sonnet"` with `claude`; `null` = CLI default) |
 | `triage_effort` | `high` | Codex reasoning effort |
@@ -582,16 +582,15 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 
 Open **Instructions** in the iPad Companion (reload the Companion once after
 upgrading), or choose **Global instructions…** in Ramble's Mac menu. Enter your
-[historical text removed for privacy]
+preferences, personal context, names, project locations, and preferred location and tap **Save instructions**. Loading, saving and errors are shown
 in the editor; unsaved drafts stay in place on a failed save. **Reload saved**
 discards a draft after confirmation. Saving a blank editor clears preferences.
 
 The single durable source is `RAMBLE_HOME/instructions.md`, normally
 `~/.ramble/instructions.md` (UTF-8, up to 32 KiB). You may also edit that file
 on the Mac. Every subsequent fast voice reply and thought triage reads it again,
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+including either Codex or Claude triage and work-session messages; no restart is needed for edits. These instructions are included in model requests and may be passed to work sessions, so enter only context you want those providers and agents to receive. Relevant
+preferences are included in the triage context for dispatch briefs. Set `timezone` (an IANA zone), `whisper_initial_prompt` (recognition vocabulary), `work_session_root`, `triage_cwd` and `jev_api_key_file` in `~/.ramble/config.json`; restart the app after changing those settings. The reminder timezone defaults to the Mac’s timezone when detectable, otherwise UTC. Listening state is separate.
 
 These are runtime user preferences. The repository's `AGENTS.md` exists and
 contains development rules; it is separate from this editor. Saved preferences
@@ -666,10 +665,10 @@ and tool output are excluded. New follow-ups re-read `prompts/work-session.md`,
 so existing owners receive the current visual guidance without a new agent. Work prompts put short spoken updates in `[say]…[/say]`.
 Speech is serialized, waits for current speech/transcription, coalesces progress,
 and gives direct answers priority. The existing playback echo guard is retained:
-[historical text removed for privacy]
+the user’s speech during playback is still dropped. Voice steering works between
 updates; reliable talking over playback needs future echo cancellation.
 
-[historical text removed for privacy]
+Defaults: `work_sessions_enabled: true`, `work_session_root: your home directory`,
 `work_session_yolo: true` (the existing dispatcher permission policy), and
 `work_progress_interval_s: 30`. `work_session_model` and `work_session_effort`
 are null, inheriting provider defaults. Set `work_session_yolo: false` for native

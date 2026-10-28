@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -26,6 +27,18 @@ TRIAGE_PROMPT = REPO / "prompts" / "triage.md"
 
 SAMPLE_RATE = 16000
 
+
+def system_timezone() -> str:
+    """Read the macOS/Linux IANA timezone; use UTC if it cannot be determined."""
+    try:
+        target = str(Path("/etc/localtime").resolve(strict=True))
+        marker = "/zoneinfo/"
+        if marker in target:
+            return target.split(marker, 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
 DEFAULTS = {
     # Capture
     "input_device": None,  # sounddevice name/index; None = system default input
@@ -37,7 +50,7 @@ DEFAULTS = {
     # Transcription (local, Apple Silicon via MLX)
     "whisper_model": "mlx-community/whisper-large-v3-turbo",
     "language": "en",  # primary language; None restores auto-detection
-    "whisper_initial_prompt": "Ramble, the user, Buddy, Ribbon Field, Stoic, ElevenLabs.",
+    "whisper_initial_prompt": "Ramble, Ribbon Field, Stoic, ElevenLabs.",
     "whisper_wired_mb": 2048,  # resident budget while listening; 0 disables; capped at 1/4 RAM
     "whisper_cache_mb": 128,  # unused MLX buffers; null keeps MLX's default
     "whisper_residency_refresh_ms": 1000,  # renew Metal residency during idle; 0 disables
@@ -48,7 +61,7 @@ DEFAULTS = {
     "triage_backend": "codex",  # "codex" (codex exec) or "claude" (claude -p)
     "triage_model": "gpt-6-astra",  # codex: OpenAI model id; claude: e.g. "sonnet"; None = CLI default
     "triage_effort": "high",  # codex reasoning effort
-    "triage_cwd": "/path/to/projects",
+    "triage_cwd": str(Path.home()),
     "triage_timeout_s": 900,
     "triage_jev_enabled": True,  # skip full triage only for confidently ambient/personal thoughts
     "triage_jev_min_probability": 0.95,
@@ -59,11 +72,12 @@ DEFAULTS = {
     "dispatch_daily_cap": None,  # unlimited by default; positive integer = daily max, 0 = no dispatch
     # Persistent work uses the existing dispatcher permission policy.
     "work_sessions_enabled": True,
-    "work_session_root": "/path/to/projects",
+    "work_session_root": str(Path.home()),
     "work_session_yolo": True,
     "work_session_model": None,
     "work_session_effort": None,
     "work_progress_interval_s": 30,
+    "timezone": system_timezone(),  # IANA timezone for reminders; override if needed
     # Notifications
     "notify": True,
     "ntfy_topic": None,  # optional https://ntfy.sh/<topic> for phone pushes
@@ -81,7 +95,7 @@ DEFAULTS = {
     "chat_followup_threshold": 0.8,  # both directed-to-Ramble and related scores must pass
     "jev_model": "jev-1.13.0",  # shared by continuation admission and background triage
     "jev_timeout_s": 3.0,  # chat failures stay passive; background failures use full triage
-    "jev_api_key_file": "/path/to/projects/secrets/typesafe_jev",  # shared local key; env keys take precedence
+    "jev_api_key_file": None,  # optional local key file; env keys take precedence
     "fast_name_window_s": 8.0,  # after a bare "Ramble?", the next utterance is the request
     "fast_coalesce_s": 1.2,  # silence window; includes time already spent transcribing
     # Spoken replies (explicit only; no automatic dispatch acknowledgements)
@@ -114,3 +128,16 @@ def load() -> dict:
     if CONFIG_PATH.exists():
         cfg.update(json.loads(CONFIG_PATH.read_text()))
     return cfg
+
+
+def render_prompt(text: str, cfg: dict | None = None) -> str:
+    """Resolve installation-specific paths without embedding them in shared prompts."""
+    cfg = cfg if cfg is not None else load()
+    paths = {
+        "{{RAMBLE_REPO}}": REPO,
+        "{{COMPANION_REPO}}": REPO.parent / "ramble-ipad-display",
+        "{{WORK_ROOT}}": Path(cfg.get("work_session_root") or Path.home()).expanduser(),
+    }
+    for marker, path in paths.items():
+        text = text.replace(marker, shlex.quote(str(path)))
+    return text

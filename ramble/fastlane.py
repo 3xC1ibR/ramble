@@ -438,7 +438,7 @@ class FastLane:
                     asked.append(f"- {stamp(r['started_at'])} Ramble asked: {it['question']}")
         return "\n".join(
             [
-                FAST_PROMPT.read_text(),
+                config.render_prompt(FAST_PROMPT.read_text(), self.cfg),
                 action_routing.guidance(),
                 instructions.prompt_block(),
                 "Work sessions (exact session_id for continuation/control): " + json.dumps(self.sessions.store.context() if self.sessions else []),

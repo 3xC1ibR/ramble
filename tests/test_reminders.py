@@ -112,11 +112,11 @@ class ReminderTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ReminderError):
                 self.client.execute(dict(self.action, **changes), 'invalid')
         with self.assertRaisesRegex(ReminderError, 'daylight saving'):
-            due_time('2030-03-10T02:30:00')
+            due_time('2030-03-10T02:30:00', 'America/New_York')
         with self.assertRaisesRegex(ReminderError, 'daylight saving'):
-            due_time('2030-11-03T01:30:00')
-        self.assertTrue(due_time('2030-11-03T01:30:00-06:00').endswith('-06:00'))
-        self.assertTrue(due_time('2030-07-04T16:00:00').endswith('-05:00'))
+            due_time('2030-11-03T01:30:00', 'America/New_York')
+        self.assertTrue(due_time('2030-11-03T01:30:00-05:00', 'America/New_York').endswith('-05:00'))
+        self.assertTrue(due_time('2030-07-04T16:00:00', 'America/New_York').endswith('-04:00'))
         self.assertEqual(self.client.calls, [])
 
     def test_result_must_confirm_requested_mutation(self):

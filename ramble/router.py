@@ -255,7 +255,7 @@ class Router:
             "-o", str(out_path),
             "-",
         ]
-        policy = config.TRIAGE_PROMPT.read_text() + '\n\n' + action_routing.guidance()
+        policy = config.render_prompt(config.TRIAGE_PROMPT.read_text(), self.cfg) + '\n\n' + action_routing.guidance()
         full = policy + "\n\n---\n\n" + prompt
         audit = {'backend': 'codex', 'cmd': cmd[:-1], 'input': full, 'context_input': prompt,
                  'system_prompt': policy, 'prompt_sha256': hashlib.sha256(full.encode()).hexdigest(),
@@ -280,7 +280,7 @@ class Router:
         return json.loads(result[result.index("{") : result.rindex("}") + 1])
 
     def run_claude(self, prompt: str, thought_id: str) -> dict:
-        policy = config.TRIAGE_PROMPT.read_text() + '\n\n' + action_routing.guidance()
+        policy = config.render_prompt(config.TRIAGE_PROMPT.read_text(), self.cfg) + '\n\n' + action_routing.guidance()
         cmd = [
             "claude",
             "-p",
@@ -461,7 +461,7 @@ class Router:
         prompt = (
             d["prompt"].rstrip()
             + "\n\n---\n"
-            + f"Dispatched automatically by ramble (the user's ambient voice capture, /path/to/projects/experiments/ramble) "
+            + f"Dispatched automatically by ramble (ambient voice capture) "
             + f"from something he said out loud at {stamp(thought['started_at'])}. He is not watching this thread live. "
             + "Work autonomously, prefer the technically best approach, keep your Agent Coord checkpoint current, and "
             + "finish with a short result he can skim. Source transcript (speech-to-text, may contain errors):\n"

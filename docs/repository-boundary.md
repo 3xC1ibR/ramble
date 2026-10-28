@@ -1,11 +1,8 @@
 # Repository boundary and privacy
 
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
+Ramble has its own Git repository. Runtime settings and personal data stay outside the checkout.
 
-[historical text removed for privacy]
+Keep the installed checkout in place when migrating. A separate
 GitHub repository does not require relocating it. This preserves the installed
 app, CLI links, existing agent working directories, and Companion's sibling
 imports and report publication. Repository separation does not remove the
@@ -25,35 +22,14 @@ files or environment variables. `.gitignore` also guards against common copies
 of these files appearing inside the checkout; it cannot untrack a file that
 was already committed.
 
-[historical text removed for privacy]
+## Privacy and publication
 
+Personal context belongs in the local Global instructions editor, not in source
+files or examples. Location, project paths and recognition vocabulary can be
+configured locally. Never commit recordings, transcripts, databases, credentials,
 [historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-
-[historical text removed for privacy]
-
-```bash
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-```
+history after a rewrite; publishing a repository needs a separate privacy,
+licensing and third-party model notice review.
 
 ## Dependencies and location assumptions
 
@@ -77,30 +53,3 @@ If the checkout is relocated later, update the Companion lookup/import paths,
 prompt helper paths and app installation together; test automatic publication
 and reconnect recovery before removing the old path. Keep `~/.ramble` intact,
 and never change `state.json` to perform a migration.
-
-[historical text removed for privacy]
-
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]
-[historical text removed for privacy]

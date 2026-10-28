@@ -371,7 +371,7 @@ class Sessions:
                 if action == "continue_session":
                     raise ValueError("Which work session should I continue?")
                 root = Path(
-                    self.cfg.get("work_session_root", "/path/to/projects")
+                    self.cfg.get("work_session_root", str(Path.home()))
                 ).resolve()
                 cwd = Path(route.get("cwd") or root).expanduser().resolve()
                 if not cwd.is_dir() or not cwd.is_relative_to(root):
@@ -412,7 +412,7 @@ class Sessions:
                     ),
                 )
                 conn.execute("INSERT INTO session_launches VALUES (?,?)", (sid, now))
-                policy = (config.REPO / "prompts/work-session.md").read_text() + '\n\n' + action_routing.guidance()
+                policy = config.render_prompt((config.REPO / "prompts/work-session.md").read_text(), self.cfg) + '\n\n' + action_routing.guidance()
                 payload = {
                     **selected,
                     "cwd": str(cwd),
@@ -635,7 +635,7 @@ class Sessions:
                 "expected": live.get("active_turn_id"),
                 "message": None
                 if action == "stop_work"
-                else (config.REPO / "prompts/work-session.md").read_text()
+                else config.render_prompt((config.REPO / "prompts/work-session.md").read_text(), self.cfg)
                 + '\n\n' + action_routing.guidance()
                 + "\n\nCurrent work session guidance above applies to this follow-up.\n"
                 + instructions.prompt_block()

@@ -4,7 +4,7 @@
 // with it so launchd can restart it.
 import Foundation
 
-let repo = (Bundle.main.object(forInfoDictionaryKey: "RambleRepo") as? String) ?? "/path/to/projects/experiments/ramble"
+let repo = (Bundle.main.object(forInfoDictionaryKey: "RambleRepo") as? String) ?? NSHomeDirectory()
 let p = Process()
 p.executableURL = URL(fileURLWithPath: repo + "/.venv/bin/python")
 p.arguments = ["-m", "ramble.app"]

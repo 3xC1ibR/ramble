@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 from . import config
 
 API = "https://tryblume.ai"
-TIMEZONE = "UTC"
+TIMEZONE = config.load().get("timezone", "UTC")
 IDENTIFIER = re.compile(r"[a-zA-Z0-9_-]{1,120}\Z")
 MARKER = re.compile(r"\n\n\[Ramble request: [a-zA-Z0-9_-]+\]\Z")
 ACTION_SCHEMA = {
@@ -30,7 +30,7 @@ ACTION_SCHEMA = {
         "operation": {"type": "string", "enum": ["create", "list", "reschedule", "cancel", "complete"]},
         "title": {"type": ["string", "null"]},
         "description": {"type": ["string", "null"]},
-        "due_at": {"type": ["string", "null"], "description": "Future ISO 8601 datetime with explicit UTC offset in UTC; null unless creating or rescheduling."},
+        "due_at": {"type": ["string", "null"], "description": "Future ISO 8601 datetime with explicit UTC offset in the configured timezone; null unless creating or rescheduling."},
         "recurrence_type": {"type": ["string", "null"], "enum": ["none", "daily", "weekly", "monthly", None]},
         "kind": {"type": ["string", "null"], "enum": ["reminder", "check-in", None]},
         "job_id": {"type": ["string", "null"], "description": "Exact Stoic note_id from the reminder list; never guess."},

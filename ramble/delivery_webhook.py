@@ -28,13 +28,13 @@ DEFAULTS = {
     "tone": "teasing",
     "callouts": {
         "teasing": [
-            "the user, {app} again? Your fridge would like a word.",
+            "{app} again? Your fridge would like a word.",
             "Opening {app}? Those delivery fees are getting a little too comfortable.",
-            "the user, step away from {app}. The kitchen is still accepting walk-ins.",
+            "Step away from {app}. The kitchen is still accepting walk-ins.",
         ],
         "firm": [
-            "the user, close {app}. Check the kitchen before paying delivery fees.",
-            "Pause, the user. Give it ten minutes before ordering from {app}.",
+            "Close {app}. Check the kitchen before paying delivery fees.",
+            "Pause. Give it ten minutes before ordering from {app}.",
         ],
     },
 }

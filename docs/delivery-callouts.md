@@ -4,13 +4,13 @@
 an authenticated event → Ramble speaks a short callout on the Mac. No AI triage,
 agent launch, microphone input, or change to the listening switch is needed.
 
-[historical text removed for privacy]
+Example: “Uber Eats again? Your fridge would like a word.” The default
 is teasing; `firm` is available. The shared 90-second cooldown covers both apps
 and all devices, including rapid retries and restarts.
 
-[historical text removed for privacy]
+## Example installation
 
-[historical text removed for privacy]
+- Endpoint: `https://device.example.ts.net/ramble-delivery/delivery-open`
 - Private token file: `~/.ramble/delivery-webhook.token` (mode 600).
 - Login service: `local.ramble.delivery-webhook`, listening only on `127.0.0.1:8789`.
 [historical text removed for privacy]
@@ -92,7 +92,7 @@ HTTP request (replace the credential placeholder privately):
 
 ```http
 POST /ramble-delivery/delivery-open HTTP/1.1
-[historical text removed for privacy]
+Host: device.example.ts.net
 Authorization: Bearer YOUR_PRIVATE_TOKEN
 Content-Type: application/json
 
@@ -128,7 +128,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 token = (Path.home() / '.ramble/delivery-webhook.token').read_text().strip()
 request = Request(
-[historical text removed for privacy]
+    'https://device.example.ts.net/ramble-delivery/healthz',
     headers={'Authorization': 'Bearer ' + token})
 with urlopen(request, timeout=15) as response:
     print(response.status, response.read().decode())
@@ -144,8 +144,8 @@ Settings live separately in `~/.ramble/delivery-webhook.json`. For example:
   "cooldown_s": 120,
   "tone": "firm",
   "callouts": {
-[historical text removed for privacy]
-[historical text removed for privacy]
+    "teasing": ["{app}? Your leftovers are feeling overlooked."],
+    "firm": ["Close {app}. Check the kitchen first."]
   }
 }
 ```
@@ -164,7 +164,7 @@ launchctl kickstart -k gui/$(id -u)/local.ramble.delivery-webhook
 Reinstall (preserves the token):
 
 ```sh
-[historical text removed for privacy]
+cd <ramble-checkout>
 ./bin/install-delivery-webhook
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --yes \
   --set-path=/ramble-delivery http://127.0.0.1:8789

@@ -101,6 +101,18 @@ class InstructionsTests(unittest.TestCase):
             else:
                 self.assertIn('disableAllHooks', ' '.join(cmd))
 
+    def test_personal_context_and_installation_paths_reach_prompts(self):
+        instructions.save("Call me Alex. Home is in Example City.")
+        cfg = dict(self.cfg, work_session_root="/tmp/project space")
+        prompt = config.render_prompt(
+            "{{RAMBLE_REPO}}/bin/reminders {{COMPANION_REPO}}/bin/publish {{WORK_ROOT}}", cfg)
+        self.assertIn("'/tmp/project space'", prompt)
+        self.assertNotIn("{{", prompt)
+        self.assertIn("Call me Alex. Home is in Example City.",
+                      self.fast.build_prompt(self.conn, "Hello"))
+        self.assertIn("Call me Alex. Home is in Example City.",
+                      self.router.build_input(self.conn, self.thought))
+
     def test_schemas_remain_strict(self):
         def check(schema):
             if 'properties' in schema:
