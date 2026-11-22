@@ -108,6 +108,12 @@ class Daemon:
         if self.sessions:
             threading.Thread(target=self.sessions.run_forever, args=(self.stop,), name='work-sessions', daemon=True).start()
             threading.Thread(target=self.sessions.speech.run_forever, args=(self.stop,), name='speech-output', daemon=True).start()
+        if self.cfg.get("output_activity_monitor"):
+            # Records which other processes play audio, so segments recorded during
+            # laptop playback can be judged as media. Reads Core Audio state only.
+            from .output_activity import OutputActivityMonitor
+            threading.Thread(target=OutputActivityMonitor(db.connect).run_forever, args=(self.stop,),
+                             name="output-activity", daemon=True).start()
         log.info("ramble started; pid=%s; state=%s; data=%s", os.getpid(), state.describe(), config.HOME)
 
     def _reading_can_play(self):
