@@ -76,6 +76,10 @@ DEFAULTS = {
     "work_session_yolo": True,
     "work_session_model": None,
     "work_session_effort": None,
+    # Conversational sessions (discussion, naming, clarification) use a
+    # low-latency pair. None inherits the quick-reply model/effort.
+    "work_conversation_model": None,
+    "work_conversation_effort": None,
     "work_progress_interval_s": 30,
     "timezone": system_timezone(),  # IANA timezone for reminders; override if needed
     # Notifications
@@ -90,6 +94,7 @@ DEFAULTS = {
     "fast_wait_notice_s": 12,  # one progress notice; never opens a follow-up window
     "fast_failure_cooldown_s": 30,  # do not hammer an unavailable responder with queued requests
     "followup_s": 20.0,  # after Ramble speaks, the next utterance counts as addressed
+    "work_followup_effort": "low",  # unnamed follow-up admission check; quick-reply model
     "work_followup_s": 3600.0,  # foreground conversation idle timeout; 0 disables direct ownership
     "chat_followup_s": 600.0,  # Jev checks late quick-chat replies; bounded to 10 min; 0 disables
     "chat_followup_threshold": 0.8,  # both directed-to-Ramble and related scores must pass

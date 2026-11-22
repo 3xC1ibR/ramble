@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config, state
+from .dispatch_activity import DispatchActivityMonitor, DispatchTarget
 
 log = logging.getLogger("ramble.activity")
 METER_TTL = .35
@@ -77,6 +78,7 @@ class Activity:
     label: str = "Mic off"
     detail: str = "Ramble · microphone off"
     awake: bool = False
+    target: DispatchTarget | None = None
 
     @property
     def compact(self):
@@ -121,10 +123,26 @@ class ActivityMonitor:
         self._thread = None
         self._work_checked = float("-inf")
         self._working = False
+        self.dispatches = DispatchActivityMonitor(getattr(daemon, "cfg", {}))
 
     def start(self):
+        self.dispatches.start(self.daemon.stop)
         self._thread = threading.Thread(target=self.run, name="mini-activity", daemon=True)
         self._thread.start()
+
+    def background_activity(self, *, hover=False):
+        notice = self.dispatches.current
+        if notice is None or (time.monotonic() > notice.expires_at and notice.mode != "stopping"
+                              and not (hover and notice.target)):
+            return None
+        outcome = next((word for word in ("Stopped", "Failed") if notice.detail.startswith(word + " ")), "Finished")
+        label = {"stopping": "Stopping…", "stopped": outcome,
+                 "stop_error": "Couldn’t stop"}.get(notice.mode, notice.name)
+        return Activity(notice.mode, label, notice.detail or "Started automatically: " + notice.name,
+                        target=notice.target)
+
+    def stop_background(self, target):
+        self.dispatches.request_stop(target)
 
     def run(self):
         while not self.daemon.stop.is_set():
@@ -153,6 +171,10 @@ class ActivityMonitor:
             thinking=daemon.fast.busy or not daemon.fast.q.empty() or cues.visual_work_active(),
             working=self._working, processing=bool(daemon.transcriber.backlog or daemon.router.current),
         )
+        dictation = getattr(daemon, "dictation", None)
+        if dictation and dictation.activity and not state.is_paused(selected):
+            self.current = dictation.activity
+            return
         if (self.current.mode not in {"paused", "speaking", "listening"}
                 and now - cues.last_error < 2.5):
             self.current = Activity("error", "Try again", "Ramble could not complete the response; check the log")

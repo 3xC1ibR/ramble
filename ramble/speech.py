@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import time
 import urllib.parse
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from . import config, db, latency, state
+from . import config, db, latency, state, voice_control
 from .cue_player import PlaybackCancelled, shared_player
 
 log = logging.getLogger("ramble.speech")
@@ -89,7 +90,6 @@ def synthesize(text: str, cfg: dict | None = None, *, voice: str | None = None,
     if provider not in {"kokoro", "elevenlabs"}:
         raise ValueError(f"Unknown TTS provider: {provider}")
     folder = config.HOME / "speech"
-    folder.mkdir(parents=True, exist_ok=True)
     path = Path(output).expanduser().resolve() if output else folder / f"{db.new_id()}.wav"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -115,19 +115,38 @@ def synthesize(text: str, cfg: dict | None = None, *, voice: str | None = None,
     return SpeechResult(path, "macos-say", _duration(path))
 
 
+def _check_audio(since, home=None):
+    if home is None:
+        state.check_audio(since)
+        return
+    capture = state.read(Path(home))
+    voice = voice_control.read(Path(home))
+    if (state.is_paused(capture) or not voice['enabled']
+            or capture.get('last_paused_at', 0) > since
+            or voice.get('changed_at', 0) > since):
+        raise state.PausedError('Ramble audio is muted, paused, or this reply was cancelled')
+
+
 def play_audio(path: str | Path, cfg: dict | None = None, *, cancelled=None, origin='reply',
-               on_playback_start=None) -> None:
+               on_playback_start=None, home=None) -> None:
     """Play synchronously with a durable, bounded feedback window (never state.json)."""
     cfg = cfg if cfg is not None else config.load()
     since = time.time()
-    state.check_audio(since)
+    _check_audio(since, home)
     if cancelled and cancelled():
         raise state.PausedError('Speech cancelled')
     path = Path(path).resolve()
     duration = _duration(path)
     tail = max(0.0, float(cfg["tts_guard_tail_s"]))
     timeout = duration + 15.0
-    conn = db.connect()
+    if home is None:
+        conn = db.connect()
+    else:
+        folder = Path(home)
+        folder.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(folder / 'ramble.db', timeout=30, isolation_level=None)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.executescript(db.SCHEMA)
     playback_id = db.new_id()
     # Commit before submitting samples. A finite upper bound recovers after a crash.
     started_at = time.time() - 0.1
@@ -147,7 +166,11 @@ def play_audio(path: str | Path, cfg: dict | None = None, *, cancelled=None, ori
             if on_playback_start:
                 on_playback_start()
         def is_cancelled():
-            return not state.audio_allowed(since) or bool(cancelled and cancelled())
+            try:
+                _check_audio(since, home)
+            except state.PausedError:
+                return True
+            return bool(cancelled and cancelled())
         # Includes preparation through confirmed final DAC time. First-frame
         # timing is an output-driver estimate, not an acoustic measurement.
         with latency.span("playback_command", playback_id=playback_id, audio_path=str(path),
@@ -160,6 +183,34 @@ def play_audio(path: str | Path, cfg: dict | None = None, *, cancelled=None, ori
         conn.execute("UPDATE speech_playbacks SET ended_at=? WHERE id=?", (ended_at, playback_id))
         conn.close()
         log.info("playback %s ended; guard through %.3f", playback_id, ended_at)
+
+
+def play_prepared(path: str | Path, cfg: dict | None = None, *, cancelled=None,
+                  origin='reading', on_playback_start=None, home=None) -> None:
+    """Serialize an already generated file; waiting for output remains cancellable."""
+    cfg = cfg if cfg is not None else config.load()
+    folder = Path(home) if home is not None else config.HOME
+    folder.mkdir(parents=True, exist_ok=True)
+    since = time.time()
+
+    def check():
+        _check_audio(since, home)
+        if cancelled and cancelled():
+            raise state.PausedError('Speech cancelled')
+
+    check()
+    with (folder / 'speech.lock').open('a') as lock:
+        with latency.span('speech_lock'):
+            while True:
+                check()
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(.05)
+        check()
+        play_audio(path, cfg, cancelled=cancelled, origin=origin,
+                   on_playback_start=on_playback_start, home=home)
 
 
 def speak(text: str, cfg: dict | None = None, *, voice: str | None = None,

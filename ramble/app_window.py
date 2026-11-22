@@ -10,8 +10,12 @@ import Foundation as F
 import objc
 
 from . import instructions, model_settings, state, usage, voice_control
+from .shortcuts import DEFAULT_SHORTCUT
+from .reading_view import ReadingView
 
 log = logging.getLogger("ramble.window")
+DICTATION_LAYOUT = dict(row_y=158, label_width=150, entry_width=220, button_width=100,
+                        permission_width=160, gap=8, row_height=26, note_height=22, section_offset=64)
 
 
 def text(value, size=13, *, bold=False, secondary=False):
@@ -65,6 +69,12 @@ class TableData(F.NSObject):
 
 
 class Actions(F.NSObject):
+    def saveShortcut_(self, sender):
+        self.owner.save_shortcut()
+
+    def enablePaste_(self, sender):
+        self.owner.app.desktop.request_permission()
+
     def showSettings_(self, sender):
         self.owner.show("settings")
 
@@ -75,7 +85,7 @@ class Actions(F.NSObject):
         self.owner.app.quit(None)
 
     def selectPage_(self, sender):
-        self.owner.select_page("usage" if sender.tag() else "settings")
+        self.owner.select_page(("settings", "usage", "reading")[sender.tag()])
 
     def modelMenu_(self, sender):
         self.owner.choose_model(sender)
@@ -100,6 +110,13 @@ class Actions(F.NSObject):
 
     def closeWindow_(self, sender):
         self.owner.window.performClose_(None)
+
+    def pauseRamble_(self, sender):
+        self.owner.pause_or_resume()
+
+    def pauseFor_(self, sender):
+        self.owner.app.pause(sender.tag())
+        self.owner.tick()
 
     def refreshUsage_(self, sender):
         self.owner.refresh_usage()
@@ -151,7 +168,7 @@ class RambleWindow:
         self.sidebar.addSubview_(self.brand)
         self.sidebar.addSubview_(self.tagline)
         self.nav = []
-        for i, title in enumerate(("Settings", "Token usage")):
+        for i, title in enumerate(("Settings", "Token usage", "Reading")):
             control = button(title, self.actions, "selectPage:", tag=i)
             control.setBezelStyle_(A.NSBezelStyleRecessed)
             control.setButtonType_(A.NSButtonTypePushOnPushOff)
@@ -159,10 +176,21 @@ class RambleWindow:
             self.nav.append(control)
         self.back = button("Back to mini window", self.actions, "closeWindow:")
         self.sidebar.addSubview_(self.back)
+        self.pause_button = button("Pause Ramble…", self.actions, "pauseRamble:")
+        self.sidebar.addSubview_(self.pause_button)
+        self.capture_status = self.add(self.sidebar, text("", 12, secondary=True))
+        self.pause_menu = A.NSMenu.alloc().initWithTitle_("Pause Ramble")
+        for label, seconds in (("Pause 1 hour", 3600), ("Pause 3 hours", 10800)):
+            item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, "pauseFor:", "")
+            item.setTag_(seconds)
+            item.setTarget_(self.actions)
+            self.pause_menu.addItem_(item)
         self.settings_page = Page.alloc().initWithFrame_(F.NSZeroRect)
         self.usage_page = Page.alloc().initWithFrame_(F.NSZeroRect)
         self.root.addSubview_(self.settings_page)
         self.root.addSubview_(self.usage_page)
+        self.reading_view = ReadingView()
+        self.root.addSubview_(self.reading_view.view)
         self.build_settings()
         self.build_usage()
         self.root.owner = self
@@ -207,6 +235,17 @@ class RambleWindow:
         page = self.settings_page
         self.settings_title = self.add(page, text("Settings", 27, bold=True))
         self.settings_description = self.add(page, text("Make Ramble work the way you do.", secondary=True))
+        self.shortcut_label = self.add(page, text("Dictation shortcut"))
+        self.shortcut_field = self.add(page, A.NSTextField.alloc().initWithFrame_(F.NSZeroRect))
+        shortcut = getattr(self.app, "dictation_shortcut", None)
+        self.shortcut_field.setStringValue_((shortcut.value if shortcut else None) or DEFAULT_SHORTCUT)
+        self.shortcut_field.setPlaceholderString_(DEFAULT_SHORTCUT)
+        self.shortcut_field.setAccessibilityLabel_("Dictation keyboard shortcut")
+        self.shortcut_field.setToolTip_("Modifiers: Control, Option, Shift, Command. Keys: letters, digits, Space, Return, Tab, F1–F12.")
+        self.shortcut_button = self.add(page, button("Set shortcut", self.actions, "saveShortcut:"))
+        self.paste_permission = self.add(page, button("Enable auto-paste…", self.actions, "enablePaste:"))
+        self.shortcut_note = self.add(page, text(getattr(self.app, "shortcut_error", None) or
+                                               "Press once to dictate, again to paste. Skips assistant routing.", 12, secondary=True))
         self.switches = []
         for label, action in (("Microphone", "toggleMic:"), ("Voice responses", "toggleVoice:"),
                               ("Show mini window", "toggleMini:")):
@@ -214,7 +253,6 @@ class RambleWindow:
             control.setButtonType_(A.NSButtonTypeSwitch)
             self.add(page, control)
             self.switches.append(control)
-        self.capture_status = self.add(page, text("", 12, secondary=True))
         self.models_title = self.add(page, text("Models & reasoning", 17, bold=True))
         self.refresh_models_button = self.add(page, button("Refresh models", self.actions, "refreshModels:"))
         self.model_rows = []
@@ -315,7 +353,13 @@ class RambleWindow:
         for i, control in enumerate(self.nav):
             place(control, 12, 122 + i * 42, 160, 34)
         place(self.back, 12, h - 52, 160, 30)
-        for page in (self.settings_page, self.usage_page):
+        back = self.back.frame()
+        row_step = self.nav[1].frame().origin.y - self.nav[0].frame().origin.y
+        place(self.pause_button, back.origin.x, back.origin.y - row_step, back.size.width, back.size.height)
+        caption = self.tagline.frame()
+        place(self.capture_status, caption.origin.x, self.pause_button.frame().origin.y - caption.size.height,
+              caption.size.width, caption.size.height)
+        for page in (self.settings_page, self.usage_page, self.reading_view.view):
             place(page, 184, 0, w - 184, h)
         width = w - 184 - 48
         for title in (self.settings_title, self.usage_title):
@@ -324,7 +368,13 @@ class RambleWindow:
             place(desc, 24, 72, width, 22)
         for i, control in enumerate(self.switches):
             place(control, 24 + i * width / 3, 116, width / 3, 26)
-        place(self.capture_status, 24, 150, width, 22)
+        layout = DICTATION_LAYOUT
+        position = 24
+        for view, key in ((self.shortcut_label, "label_width"), (self.shortcut_field, "entry_width"),
+                          (self.shortcut_button, "button_width"), (self.paste_permission, "permission_width")):
+            place(view, position, layout["row_y"], layout[key], layout["row_height"])
+            position += layout[key] + layout["gap"]
+        place(self.shortcut_note, 24, layout["row_y"] + layout["row_height"] + layout["gap"], width, layout["note_height"])
         place(self.models_title, 24, 196, width - 150, 26)
         place(self.refresh_models_button, width - 120, 192, 144, 30)
         for i, (_, label, control) in enumerate(self.model_rows):
@@ -334,6 +384,14 @@ class RambleWindow:
         place(self.instructions_title, 24, 411, width, 26)
         place(self.instructions_description, 24, 444, width, 22)
         place(self.editor_scroll, 24, 478, width, h - 580)
+        for view in [self.models_title, self.refresh_models_button, self.model_status,
+                     self.instructions_title, self.instructions_description,
+                     *[view for _, label, control in self.model_rows for view in (label, control)]]:
+            frame = view.frame()
+            view.setFrameOrigin_(F.NSMakePoint(frame.origin.x, frame.origin.y + layout["section_offset"]))
+        frame = self.editor_scroll.frame()
+        place(self.editor_scroll, frame.origin.x, frame.origin.y + layout["section_offset"],
+              frame.size.width, frame.size.height - layout["section_offset"])
         place(self.save_button, 24, h - 88, 150, 32)
         place(self.reload_button, 184, h - 88, 130, 32)
         place(self.instructions_status, 24, h - 45, width, 24)
@@ -357,20 +415,41 @@ class RambleWindow:
         place(self.usage_note2, 24, h - 33, width, 20)
 
     def show(self, page=None):
+        if page is None and not self.window.isVisible():
+            try:
+                article = self.reading_view.service.store().snapshot().get('reading')
+                if article and article['status'] in {'preparing', 'playing', 'paused'}:
+                    page = 'reading'
+            except Exception:
+                # Existing navigation remains available if saved reading state cannot load.
+                pass
         if page:
             self.select_page(page)
         self.window.makeKeyAndOrderFront_(None)
         A.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.tick()
 
+    def save_shortcut(self):
+        try:
+            value = self.app.save_dictation_shortcut(self.shortcut_field.stringValue())
+            self.shortcut_field.setStringValue_(value)
+            message = "Shortcut saved. Press once to dictate, again to paste."
+        except (OSError, ValueError, RuntimeError) as exc:
+            message = str(exc)
+        self.shortcut_note.setStringValue_(message)
+        self.shortcut_note.setToolTip_(message)
+
     def select_page(self, page):
         self.page = page
         self.settings_page.setHidden_(page != "settings")
         self.usage_page.setHidden_(page != "usage")
-        for control, name in zip(self.nav, ("settings", "usage")):
+        self.reading_view.view.setHidden_(page != "reading")
+        for control, name in zip(self.nav, ("settings", "usage", "reading")):
             control.setState_(int(page == name))
         if page == "usage":
             self.refresh_usage()
+        elif page == "reading":
+            self.reading_view.refresh()
 
     def choose_model(self, sender):
         menu = self.app.mini_model_menu()
@@ -381,6 +460,15 @@ class RambleWindow:
             menu.popUpMenuPositioningItem_atLocation_inView_(None, F.NSMakePoint(0, sender.bounds().size.height), sender)
         finally:
             self.app.mini.menu_open = False
+
+    def pause_or_resume(self):
+        # Honor the action displayed when clicked, even if the timer just expired.
+        if self.pause_button.tag():
+            self.app.resume(None)
+            self.tick()
+        else:
+            self.pause_menu.popUpMenuPositioningItem_atLocation_inView_(
+                None, F.NSMakePoint(0, self.pause_button.bounds().size.height), self.pause_button)
 
     def load_instructions(self):
         try:
@@ -504,15 +592,31 @@ class RambleWindow:
                 self.refresh_usage()
         if not self.window.isVisible():
             return
+        selected = state.read()
+        paused = state.is_paused(selected)
+        self.pause_button.setTag_(int(paused))
+        self.pause_button.setTitle_("Resume Ramble" if paused else "Pause Ramble…")
+        status = state.describe(selected).capitalize() if paused else (
+            "Listening" if state.is_listening(selected) else "Microphone off")
+        self.capture_status.setStringValue_(status)
+        self.capture_status.setToolTip_(status)
+        self.pause_button.setToolTip_(status + ". Resume now." if paused else
+                                      "Pause capture, replies and background triage. Choose when to resume automatically.")
+        if self.page == "reading":
+            self.reading_view.tick()
+            return
         if self.page == "usage":
             if not self.usage_busy and time.monotonic() >= self.usage_refresh_at:
                 self.refresh_usage()
             return
-        selected = state.read()
         self.switches[0].setState_(int(state.is_listening(selected)))
         self.switches[1].setState_(int(voice_control.read()["enabled"]))
         self.switches[2].setState_(int(self.app.mini.visible))
-        self.capture_status.setStringValue_("Microphone " + state.describe(selected))
+        desktop = getattr(self.app, "desktop", None)
+        permitted = bool(desktop and desktop.permitted())
+        self.paste_permission.setEnabled_(bool(desktop) and not permitted)
+        self.paste_permission.setTitle_("Auto-paste enabled" if permitted else "Enable auto-paste…")
+        self.paste_permission.setToolTip_("Accessibility permission allows Ramble to paste. Without it, dictation is copied for Command+V.")
         saved = self.app.model_snapshot
         for lane, _, picker in self.model_rows:
             pair = saved["settings"][lane] if saved else None
@@ -523,6 +627,7 @@ class RambleWindow:
                                           "Changes apply to new requests. Existing work sessions keep their model."))
 
     def close(self):
+        self.reading_view.close()
         self.timer.invalidate()
         self.window.orderOut_(None)
         self.root.owner = None

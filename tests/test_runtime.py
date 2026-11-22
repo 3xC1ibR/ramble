@@ -6,15 +6,94 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import textwrap
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
-from ramble import config, db
+from ramble import config, db, state
+from ramble.capture_control import CaptureControl, CaptureError
 from ramble.daemon import Daemon
 from ramble.runtime import AlreadyRunning, acquire_daemon_lock
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_blocked_microphone_driver_exits_and_releases_capture_owner(self):
+        for listening in (True, False):
+            with self.subTest(listening=listening), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                selected = state.write(listening, home=home)
+                code = textwrap.dedent("""\
+                    from pathlib import Path
+                    import sys, threading
+                    from unittest.mock import Mock
+                    from ramble import config
+                    import ramble.daemon as runtime
+                    from ramble.runtime import acquire_daemon_lock
+
+                    config.HOME = Path(sys.argv[1])
+                    # Initial sync succeeds. The next start/stop blocks like
+                    # a native driver call, with the steady-state deadline.
+                    runtime.MIC_CONTROL_TIMEOUT_S = .05
+                    runtime.INITIAL_MIC_CONTROL_TIMEOUT_S = 10
+                    daemon = runtime.Daemon()
+                    owner = acquire_daemon_lock(config.HOME)
+                    daemon.recorder = Mock(active=True, error=None)
+                    blocked = threading.Event()
+                    calls = 0
+                    def driver_call():
+                        global calls
+                        calls += 1
+                        if calls > 1:
+                            blocked.wait()
+                    operation = (daemon.recorder.start if sys.argv[2] == 'True'
+                                 else daemon.recorder.stop)
+                    operation.side_effect = driver_call
+                    threading.Thread(target=daemon._mic_control, daemon=True).start()
+                    daemon._mic_watchdog()
+                """)
+                result = subprocess.run([sys.executable, "-c", code, tmp, str(listening)],
+                                        capture_output=True, text=True, timeout=15,
+                                        env=dict(os.environ, RAMBLE_HOME=tmp))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("Microphone control stopped responding", result.stderr)
+                import json
+                status = json.loads((home / "capture-status.json").read_text())
+                self.assertTrue(status["failed"])
+                self.assertFalse(status["active"])
+                self.assertEqual(state.read(home=home), selected)
+                with self.assertRaises(CaptureError):
+                    CaptureControl(home).snapshot()
+                # A fresh app can acquire ownership after forced recovery.
+                recovered = acquire_daemon_lock(home)
+                recovered.close()
+
+    def test_mic_watchdog_allows_initial_prompt_and_healthy_control(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(config, "HOME", Path(tmp)):
+            daemon = Daemon()
+            entered, release = threading.Event(), threading.Event()
+            def initial_sync():
+                entered.set()
+                release.wait(2)
+            with patch.object(daemon, "sync", side_effect=initial_sync), \
+                    patch("ramble.daemon.os._exit") as exit_process:
+                control = threading.Thread(target=daemon._mic_control)
+                control.start()
+                try:
+                    self.assertTrue(entered.wait(1))
+                    self.assertGreater(daemon._mic_control_deadline - time.monotonic(), 290)
+                    # A watchdog tick during the permission grace must not exit.
+                    with patch.object(daemon.stop, "wait", side_effect=[False, True]):
+                        daemon._mic_watchdog()
+                    exit_process.assert_not_called()
+                    daemon.stop.set()
+                finally:
+                    release.set()
+                    control.join(3)
+                self.assertFalse(control.is_alive())
+                self.assertIsNone(daemon._mic_control_deadline)
+
     def test_duplicate_launch_has_one_activation_and_response_but_repeats_work(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(config, "HOME", Path(tmp)):
             first, duplicate = Daemon(), Daemon()
@@ -29,8 +108,12 @@ class RuntimeTests(unittest.TestCase):
                         continue
                     accepted.append(candidate)
                 first.start()  # Reentrant calls cannot create more workers.
-                self.assertEqual(thread.call_count, 7)
-                self.assertEqual(thread.return_value.start.call_count, 7)
+                workers = [call.kwargs['name'] for call in thread.call_args_list]
+                self.assertEqual(len(workers), len(set(workers)))
+                self.assertEqual(set(workers), {'transcriber', 'router', 'mic-control', 'mic-watchdog', 'fast-lane',
+                                               'audio-cues', 'work-sessions', 'speech-output',
+                                               'article-reading', 'reading-questions', 'model-discovery'})
+                self.assertEqual(thread.return_value.start.call_count, len(workers))
                 connect.assert_called_once_with()
             self.assertEqual(accepted, [first])
 

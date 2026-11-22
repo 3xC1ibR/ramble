@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import logging
 import threading
 import time
 
@@ -12,6 +13,8 @@ from . import config, model_settings, state, voice_control
 from .daemon import Daemon, setup_logging
 from .mini_window import MiniWindow
 from .app_window import RambleWindow
+from .desktop_paste import DesktopPaste
+from .shortcuts import GlobalShortcut, load_shortcut
 
 ON, OFF, PAUSED = "🎙", "🎙̸", "⏸"
 
@@ -33,6 +36,17 @@ class RambleApp(rumps.App):
         self.model_refresh_at = 0
         self.model_error = None
         self.main_window = None
+        self.desktop = DesktopPaste()
+        self.dictation_shortcut = None
+        self.shortcut_error = None
+        try:
+            self.dictation_shortcut = GlobalShortcut(self.toggle_dictation, cancel=self.cancel_dictation)
+            self.dictation_shortcut.register(load_shortcut())
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            self.shortcut_error = str(exc)
+        logging.getLogger("ramble.app").info("dictation shortcut=%s; auto-paste permission=%s; shortcut error=%s",
+                                             self.dictation_shortcut.value if self.dictation_shortcut else None,
+                                             self.desktop.permitted(), self.shortcut_error)
         self.menu = [
             rumps.MenuItem("Open Ramble…", callback=lambda _: self.open_window()),
             rumps.MenuItem("Token usage…", callback=lambda _: self.open_window("usage")),
@@ -48,6 +62,7 @@ class RambleApp(rumps.App):
             self.stats_item,
             None,
             self.models_item,
+            rumps.MenuItem("Dictation shortcut…", callback=lambda _: self.open_settings()),
             rumps.MenuItem("Global instructions…", callback=lambda _: self.open_settings()),
             rumps.MenuItem("Open today's digest", callback=self.open_digest),
             rumps.MenuItem("Open data folder", callback=lambda _: subprocess.run(["open", str(config.HOME)])),
@@ -56,11 +71,50 @@ class RambleApp(rumps.App):
             rumps.MenuItem("Quit Ramble", callback=self.quit),
         ]
         self.daemon.start()
-        self.mini = MiniWindow(self.daemon, model_menu=self.mini_model_menu, open_settings=self.open_window)
+        self.mini = MiniWindow(self.daemon, model_menu=self.mini_model_menu, open_settings=self.open_window,
+                               pause=self.pause, resume=self.resume, undo_dictation=self.undo_dictation)
         self.mini_item.state = int(self.mini.visible)
         self.timer = rumps.Timer(self.tick, 1)
         self.timer.start()
+        self.dictation_timer = rumps.Timer(self.poll_dictation, .1)
+        self.dictation_timer.start()
         self.n = 0
+
+    def toggle_dictation(self):
+        try:
+            self.dictation_shortcut.set_cancel_active(True)
+        except ValueError as exc:
+            self.daemon.dictation.notice("Unavailable", str(exc), error=True)
+            return
+        try:
+            self.daemon.dictation.toggle(self.desktop)
+        finally:
+            self.dictation_shortcut.set_cancel_active(bool(self.daemon.dictation.recording))
+
+    def cancel_dictation(self):
+        try:
+            self.daemon.dictation.cancel()
+        finally:
+            self.dictation_shortcut.set_cancel_active(False)
+
+    def undo_dictation(self):
+        self.daemon.dictation.undo(self.desktop)
+
+    def poll_dictation(self, _):
+        try:
+            self.daemon.dictation.poll(self.desktop)
+        finally:
+            if self.dictation_shortcut and not self.daemon.dictation.recording:
+                self.dictation_shortcut.set_cancel_active(False)
+
+    def save_dictation_shortcut(self, value):
+        if self.daemon.dictation.recording:
+            raise ValueError("Finish dictation before changing its shortcut.")
+        if self.dictation_shortcut is None:
+            self.dictation_shortcut = GlobalShortcut(self.toggle_dictation, cancel=self.cancel_dictation)
+        value = self.dictation_shortcut.save(value)
+        self.shortcut_error = None
+        return value
 
     def refresh_models(self, settings=None, version=None):
         if self.model_busy:
@@ -130,6 +184,10 @@ class RambleApp(rumps.App):
         state.write(True, time.time() + seconds)
         self.tick(None)
 
+    def resume(self, _) -> None:
+        state.write(True)
+        self.tick(None)
+
     def toggle_voice(self, _) -> None:
         voice_control.write(not voice_control.read()["enabled"])
         self.tick(None)
@@ -189,6 +247,9 @@ class RambleApp(rumps.App):
             )
 
     def quit(self, _) -> None:
+        self.dictation_timer.stop()
+        if self.dictation_shortcut:
+            self.dictation_shortcut.close()
         if self.main_window:
             self.main_window.close()
         self.mini.close()

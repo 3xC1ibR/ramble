@@ -20,7 +20,7 @@ from .addressing import ADDRESS, NAME, has_name
 from .cues import AudioCues
 from .early_wake import EarlyWake
 from .fast_trace import FastTrace, diagnostic
-from . import model_settings, direct_routing, action_routing, usage
+from . import model_settings, direct_routing, action_routing, usage, reading_interaction
 from .sessions import ROUTE_SCHEMA
 from .router import clean_env
 from .transcribe import stamp
@@ -30,7 +30,11 @@ log = logging.getLogger("ramble.fast")
 FAST_PROMPT = config.REPO / "prompts" / "fast.md"
 FOLLOWUP_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "properties": {"accept": {"type": "boolean"}}, "required": ["accept"],
+    "properties": {
+        "accept": {"type": "boolean"},
+        "workload": {"type": ["string", "null"], "enum": ["conversation", "work", None]},
+    },
+    "required": ["accept", "workload"],
 }
 
 REPLY_SCHEMA = {
@@ -39,11 +43,13 @@ REPLY_SCHEMA = {
     "properties": {
         "reply": {"type": "string", "description": "What Ramble says out loud: one or two short sentences, no markdown."},
         "route": ROUTE_SCHEMA,
+        "reading_answer": {"type": "boolean", "description": "True only when reply answers about the supplied current article; false for unrelated requests."},
         "handoff": {"type": "boolean", "description": "Legacy dispatch only when interactive sessions are unavailable; false otherwise."},
         "reminder": reminders.ACTION_SCHEMA,
         "time_entry": time_entries.ACTION_SCHEMA,
+        "global_instructions": instructions.ACTION_SCHEMA,
     },
-    "required": ["reply", "handoff", "reminder", "time_entry", "route"],
+    "required": ["reply", "handoff", "reminder", "time_entry", "global_instructions", "route", "reading_answer"],
 }
 
 
@@ -59,6 +65,8 @@ class FastLane:
         self.unavailable_until = 0.0
         self.unavailable_reply = ""
         self.sessions = None
+        self.work_continuation = None  # (session_id, epoch, admit-until wall time)
+        self.reading = None  # Wired to the persistent reader by the daemon.
         self.jev = JevClient(cfg)
         self.cues = AudioCues(cfg)
         self.early = EarlyWake(cfg, self.cues)
@@ -97,6 +105,17 @@ class FastLane:
             return True
         companion = dict(seg).get('source') == 'companion'
         named = has_name(text)
+        if self.reading and (companion or named or self._in_followup(conn, seg['started_at'])):
+            action = reading_interaction.local_control(text)
+            current = self.reading.snapshot()['reading'] if action else None
+            if (action and current and (reading_interaction.context_active(current)
+                    or reading_interaction.explicit_reference(text)) and reading_interaction.apply_control(
+                    self.reading, action, request_id='reading-control-' + seg['id'], reading_id=current['id'])):
+                conn.execute("INSERT OR IGNORE INTO session_claims(segment_id,status) VALUES (?,'handled')",
+                             (seg['id'],))
+                self.cues.end_work()
+                latency.event('local_reading_control', segment_id=seg['id'], action=action)
+                return True
         control = direct_routing.control(text)
         if control and self.sessions:
             row = conn.execute('SELECT id FROM work_sessions WHERE foreground=1 LIMIT 1').fetchone()
@@ -152,9 +171,18 @@ class FastLane:
         self.request_until = seg["ended_at"] + self.cfg["fast_name_window_s"]
         why = "companion" if companion else "named" if named else "follow-up" if followup else "continuation"
         item = {"seg": dict(seg), "text": text, "why": why}
+        if self.reading and not direct_routing.needs_router(text) and not action_routing.intent(text):
+            current = self.reading.snapshot()['reading']
+            if reading_interaction.context_active(current):
+                if current['status'] in {'preparing', 'playing'}:
+                    current = self.reading.control('pause', reading_id=current['id'],
+                                                  request_id='reading-address-' + seg['id'])['reading']
+                item['reading_id'] = current['id']
+                item['reading_revision'] = current['revision']
+                reading_interaction.invalidate_discussion(current['id'], self.reading.home)
         if self.sessions:
             owner = self.sessions.followup_owner(conn, seg['started_at'])
-            if owner and not direct_routing.needs_router(text):
+            if owner and not item.get('reading_id') and not direct_routing.needs_router(text):
                 item['direct_owner'] = owner
             chat = chat_followup.current(conn, self.cfg, seg['started_at'])
             if chat:
@@ -255,21 +283,36 @@ class FastLane:
         try:
             if stop.is_set() or not state.activity_allowed(item['seg']['started_at']) or time.time() > owner['expires_at']:
                 return
-            prompt = (config.REPO / 'prompts/work-followup.md').read_text() + '\n\n' + json.dumps({
-                'work': owner, 'utterance': item['text'],
-            })
-            answer = self.run_codex(prompt, schema=FOLLOWUP_SCHEMA, read_only=True,
-                                    request_id=item['seg']['id'], cancelled=lambda: stop.is_set()
-                                    or not state.activity_allowed(item['seg']['started_at']))
+            continuation = self.work_continuation
+            started = time.monotonic()
+            if (continuation and continuation[:2] == (owner['session_id'], owner.get('epoch'))
+                    and item['seg']['started_at'] <= continuation[2]):
+                # The rest of a just-admitted utterance, split by a short pause.
+                # Mirrors the addressed path's continuation window; no model call.
+                answer, basis = {'accept': True, 'workload': None}, 'continuation'
+            else:
+                prompt = (config.REPO / 'prompts/work-followup.md').read_text() + '\n\n' + json.dumps({
+                    'work': owner, 'utterance': item['text'],
+                })
+                answer = self.run_codex(prompt, schema=FOLLOWUP_SCHEMA, read_only=True,
+                                        selected=model_settings.followup_selection(self.cfg),
+                                        request_id=item['seg']['id'], cancelled=lambda: stop.is_set()
+                                        or not state.activity_allowed(item['seg']['started_at']))
+                basis = 'classifier'
             latency.event('work_followup_decision', segment_id=item['seg']['id'],
                           session_id=owner['session_id'], accepted=answer.get('accept') is True,
+                          basis=basis, workload=answer.get('workload'),
+                          elapsed_s=time.monotonic() - started,
                           seconds_since_conversation=owner.get('seconds_since_conversation'))
             if answer.get('accept') is not True or stop.is_set():
                 return
             sid, _ = self.sessions.route(
-                {'action': 'continue_session', 'session_id': owner['session_id']},
+                {'action': 'continue_session', 'session_id': owner['session_id'],
+                 'workload': answer.get('workload')},
                 item['text'], [item],
             )
+            self.work_continuation = (owner['session_id'], owner.get('epoch'),
+                                      item['seg']['ended_at'] + self.cfg['fast_name_window_s'])
             log.info('work follow-up admitted: %s owner=%s', item['seg']['id'], sid)
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, codex_runner.RateLimitedError):
@@ -423,7 +466,7 @@ class FastLane:
         # context snapshots which have only a display time, not a timestamp.
         return list(unique.values())[-8:]
 
-    def build_prompt(self, conn, text: str, *, conversation=None) -> str:
+    def build_prompt(self, conn, text: str, *, conversation=None, reading_context=None) -> str:
         now = time.time()
         if conversation is None:
             conversation = self.recent_conversation()
@@ -441,6 +484,7 @@ class FastLane:
                 config.render_prompt(FAST_PROMPT.read_text(), self.cfg),
                 action_routing.guidance(),
                 instructions.prompt_block(),
+                reading_interaction.context_block(reading_context, self.reading.home if self.reading else None),
                 "Work sessions (exact session_id for continuation/control): " + json.dumps(self.sessions.store.context() if self.sessions else []),
                 "Interactive work is " + ("enabled." if self.sessions else "unavailable; use the legacy handoff for work."),
                 *( [model_settings.work_routing_context(self.cfg)]
@@ -462,9 +506,9 @@ class FastLane:
             ]
         )
 
-    def run_codex(self, prompt: str, *, schema=None, read_only=False,
+    def run_codex(self, prompt: str, *, schema=None, read_only=False, selected=None,
                   request_id=None, on_wait=None, cancelled=None) -> dict:
-        selected = model_settings.selection(self.cfg, "fast")
+        selected = selected or model_settings.selection(self.cfg, "fast")
         timeout_s = model_settings.fast_timeout(self.cfg, selected)
         work = config.TRIAGE_DIR / "tmp"
         work.mkdir(parents=True, exist_ok=True)
@@ -558,6 +602,8 @@ class FastLane:
                  *, work_token=None) -> None:
         stop = stop if stop is not None else threading.Event()
         text = ' '.join(i['text'] for i in items)
+        reading_id = items[0].get('reading_id')
+        reading_context = self.reading.snapshot()['reading'] if self.reading and reading_id else None
         if direct_routing.needs_router(text) or action_routing.intent(text):
             # A later coalesced segment may explicitly ask for a different
             # destination. Its request takes precedence over the earlier pin.
@@ -572,7 +618,8 @@ class FastLane:
                 self.cues.end_work(work_token)
                 return
             try:
-                self.sessions.route({'action': 'continue_session', 'session_id': owner['session_id']}, text, items)
+                self.sessions.route({'action': 'continue_session', 'session_id': owner['session_id'],
+                                     'workload': direct_routing.workload_hint(text)}, text, items)
             except (ValueError, OSError, sqlite3.Error) as exc:
                 # A captured owner becoming stale is not permission to redirect
                 # the message or create another session through the model.
@@ -594,6 +641,11 @@ class FastLane:
         waiting_sent = False
 
         def request_allowed():
+            if reading_id:
+                live = self.reading.snapshot()['reading']
+                if (not live or live['id'] != reading_id or live['status'] != 'paused'
+                        or live['revision'] != items[0].get('reading_revision')):
+                    return False
             sid = items[0].get('action_session_id')
             if sid and self.sessions:
                 session = self.sessions.store.get(sid)
@@ -651,7 +703,7 @@ class FastLane:
                 with latency.span("answer", segment_ids=[i["seg"]["id"] for i in items]):
                     # Save exactly the conversation used by the final routing
                     # decision, including when speech causes an answer rerun.
-                    prompt = self.build_prompt(conn, text, conversation=conversation)
+                    prompt = self.build_prompt(conn, text, conversation=conversation, reading_context=reading_context)
                     options = {}
                     if target:
                         options['schema'] = action_routing.reply_schema(REPLY_SCHEMA, target)
@@ -706,15 +758,19 @@ class FastLane:
             failure = ans['reply']
         # A model may be rerun while speech continues. Execute mutations only
         # after coalescing finishes, never inside the model's shell lookups.
-        if ans.get("reminder") is not None and ans.get("time_entry") is not None:
-            ans.update(reminder=None, time_entry=None, handoff=False,
-                       reply="Please give me the reminder and time entry changes one at a time.")
-        action_kind = "time entry" if ans.get("time_entry") is not None else "reminder"
-        action = ans.get("time_entry") if action_kind == "time entry" else ans.get("reminder")
+        families = [name for name in action_routing.capabilities() if ans.get(name) is not None]
+        if len(families) > 1:
+            ans.update({name: None for name in families})
+            ans.update(handoff=False, route=None,
+                       reply="Please give me those changes one at a time.")
+            families = []
+        family = families[0] if families else target[0] if target else 'reminder'
+        action_kind = family.replace('_', ' ')
+        action = ans.get(family)
         action_record = None
         if target or action is not None:
             if target is None:
-                target = ('time_entry' if action_kind == 'time entry' else 'reminder', action.get('operation'))
+                target = (family, action.get('operation'))
             sid = items[0].get('action_session_id')
             epoch = items[0].get('action_epoch')
             if self.sessions and sid is None:
@@ -739,7 +795,8 @@ class FastLane:
             ans["handoff"] = False
             action_routing.finish(conn, action_record['id'], 'running', 'Executing action; completion not yet confirmed.')
             try:
-                adapter = time_entries.TimeEntries() if action_kind == "time entry" else reminders.Reminders()
+                adapter = (instructions if family == 'global_instructions' else
+                           time_entries.TimeEntries() if family == 'time_entry' else reminders.Reminders())
                 result = adapter.execute(action, key)
                 ans["reply"] = result["reply"]
                 outcome = "confirmed"
@@ -756,8 +813,14 @@ class FastLane:
                 action_status = 'failed'
                 failure = ans['reply']
                 self.cues.emit("error")
+            except instructions.InstructionError as exc:
+                ans['reply'] = str(exc)
+                outcome, action_status = 'failed; instructions unchanged', 'failed'
+                failure = ans['reply']
+                self.cues.emit('error')
             except (OSError, sqlite3.Error):
-                ans["reply"] = f"I couldn't confirm that {action_kind} change. Check Stoic before trying again."
+                destination = 'your global instructions in Settings' if family == 'global_instructions' else 'Stoic'
+                ans["reply"] = f"I couldn't confirm that {action_kind} change. Check {destination} before trying again."
                 outcome = "unconfirmed; local receipt unavailable; do not retry automatically"
                 action_status = 'unconfirmed'
                 failure = ans['reply']
@@ -774,12 +837,16 @@ class FastLane:
         elif action_record:
             action_routing.finish(conn, action_record['id'], 'failed' if failure else 'needs_input', ans['reply'])
         routed_sid = None
+        routed_work = False
         if self.sessions:
             if action is None and ans.get('route'):
                 try:
                     routed_sid, ans['reply'] = self.sessions.route(
                         ans['route'], text, items, conversation=conversation,
                     )
+                    routed_work = bool(routed_sid) and ans['route'].get('action') in {
+                        'work', 'continue_session', 'delegate',
+                    }
                 except (ValueError, OSError, sqlite3.Error) as exc:
                     ans['reply'] = str(exc)
                     failure = ans['reply']
@@ -791,12 +858,34 @@ class FastLane:
                     routed_sid, ans['reply'] = self.sessions.route(
                         {'action':'work'}, text, items, conversation=conversation,
                     )
+                    routed_work = bool(routed_sid)
                 except (ValueError, OSError, sqlite3.Error) as exc:
                     ans['reply'] = str(exc)
                     failure = ans['reply']
                 ans['handoff'] = False
             self.sessions.mark_inputs(conn, items, routed_sid, error=failure)
+        if routed_work and not failure and not action_record:
+            # The selected owner supplies the response, just as on direct
+            # delivery. A routing receipt is not a second spoken answer and
+            # must not open the quick-reply follow-up window.
+            self.history.append((seg['started_at'], 'the user', text))
+            chat_followup.clear(conn)
+            latency.event('routed_work_input', session_id=routed_sid,
+                          segment_ids=[i['seg']['id'] for i in items])
+            self.cues.end_work(work_token)
+            return
         reply = ans["reply"].strip()
+        reading_answer_id = None
+        if ans.get('reading_answer') and reading_context and not routed_sid and not action_record and not failure:
+            reading_answer_id = 'reading-answer-' + reminders.voice_key(items)
+            try:
+                reading_interaction.record_answer(text, reply, reading_context, home=self.reading.home,
+                                                  request_id=reading_answer_id)
+            except ValueError as exc:
+                if self.sessions:
+                    self.sessions.mark_inputs(conn, items, error=str(exc))
+                self.cues.end_work(work_token)
+                return
         work_token = self.cues.response_token(work_token, [i['seg']['started_at'] for i in items])
         latency.event("reply_ready", segment_ids=[i["seg"]["id"] for i in items])
         log.info("fast reply in %.1fs (handoff=%s): %s", time.time() - t0, ans["handoff"], reply)
@@ -805,18 +894,21 @@ class FastLane:
         speech_job_id = None
         if self.sessions and self.sessions.speech:
             tid = conn.execute('SELECT thought_id FROM segments WHERE id=?', (seg['id'],)).fetchone()
-            job_id = 'reply-' + reminders.voice_key(items)
+            job_id = reading_answer_id or 'reply-' + reminders.voice_key(items)
             # Bind before enqueue: a speech worker may pick up the row at once.
             self.cues.wait_for_speech(work_token, job_id)
             speech_job_id = self.sessions.speech.enqueue(reply, thought_id=tid[0] if tid else None,
                                          job_id=job_id,
+                                         **({'kind': 'reading_answer'} if reading_answer_id else {}),
                                          since=items[0]['seg']['started_at'])
             spoken = None
         elif self.cfg.get("fast_speak", True) and state.audio_allowed(items[0]['seg']['started_at']):
             try:
                 from . import speech
 
-                speech.speak(reply, self.cfg, on_playback_start=lambda: self.cues.end_work(work_token))
+                speech.speak(reply, self.cfg, on_playback_start=lambda: self.cues.end_work(work_token),
+                             **({'cancelled': lambda: not reading_interaction.delivery_allowed(
+                                 reading_answer_id, self.reading.home)} if reading_answer_id else {}))
                 log.info("finished speaking %.1fs after he stopped talking", time.time() - seg["ended_at"])
             except state.PausedError:
                 log.info("fast reply cancelled by pause")

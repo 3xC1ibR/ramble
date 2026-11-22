@@ -118,7 +118,10 @@ class PlayerTests(unittest.TestCase):
             return child
         for p in (patch.object(config, "HOME", self.home),
                   patch.object(cue_player.subprocess, "Popen", side_effect=launch),
-                  patch.object(cue_player, "STARTUP_TIMEOUT", .8),
+                  # A fresh helper imports NumPy/SciPy before opening output;
+                  # measured cold imports can exceed one second on this host.
+                  # Keep recovery bounded without mistaking imports for a hang.
+                  patch.object(cue_player, "STARTUP_TIMEOUT", 2.0),
                   patch.object(cue_player, "HEALTH_TIMEOUT", .6),
                   patch.object(cue_player, "RETRY_DELAY", .03)):
             p.start()
@@ -170,7 +173,11 @@ class PlayerTests(unittest.TestCase):
         # Keep production's health deadline: the per-cue bound must recover
         # before the idle health watchdog, while the cue is still fresh.
         with patch.object(cue_player, "HEALTH_TIMEOUT", 1.5):
-            self.assertTrue(self.player.play("accepted", .5, time.monotonic() + 2, lambda: False))
+            # Include one failed cue and a cold helper import in the caller's
+            # deadline. The warm-output latency assertion remains separate.
+            deadline = time.monotonic() + cue_player.PLAY_TIMEOUT + cue_player.STARTUP_TIMEOUT + .5
+            self.assertTrue(self.player.play("accepted", .5, deadline, lambda: False))
+            self.assertLess(time.monotonic(), deadline)
         self.assertIsNot(self.player.process, failed)
         self.assertIsNotNone(failed.poll())
 

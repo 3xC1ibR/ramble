@@ -86,6 +86,16 @@ class SessionBackend:
             args += ["--message", "-"]
         return self.call(args, message)
 
+    def change_settings(self, command_id, thread, model, effort):
+        """Queue a supported idle settings change; it applies to the next native turn."""
+        args = ["thread", "settings", "--session-id", thread, "--from-session", self.sender(),
+                "--request-id", command_id, "--wait", "0"]
+        if model:
+            args += ["--model", model]
+        if effort:
+            args += ["--effort", effort]
+        return self.call(args)
+
     def settings(self, thread):
         return self.call(["thread", "settings", "--session-id", thread])
 

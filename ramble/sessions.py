@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from . import config, db, input_receipts, instructions, state, action_routing, model_settings
+from . import config, db, input_receipts, instructions, latency, state, action_routing, model_settings
 from .session_backend import SessionBackend
 from .session_store import SessionStore, key
 from .reminders import voice_key
@@ -35,9 +35,31 @@ ROUTE_SCHEMA = {
         "name": {"type": ["string", "null"]},
         "model": {"type": ["string", "null"]},
         "effort": {"type": ["string", "null"]},
+        "workload": {"type": ["string", "null"], "enum": ["conversation", "work", None]},
     },
-    "required": ["action", "session_id", "cwd", "name", "model", "effort"],
+    "required": ["action", "session_id", "cwd", "name", "model", "effort", "workload"],
 }
+TURN_CHANGED = "The active turn changed"
+MAX_SUBMIT_ATTEMPTS = 3
+SETTINGS_WAIT_S = 15  # bounded wait for an idle model change before a new turn
+
+
+def request_id(command):
+    """The native request key; refreshed retries after a rejected guard get a new one."""
+    native = json.loads(command.get("native_payload") or "{}")
+    return native.get("request_id") or command["id"]
+
+
+def latest_selection(conn, sid):
+    """The most recent requested model/effort recorded for this session, if any."""
+    for row in conn.execute(
+        "SELECT payload FROM session_commands WHERE session_id=? AND action IN ('create','settings') "
+        "AND status NOT IN ('failed','cancelled') ORDER BY created_at DESC", (sid,)
+    ):
+        selection = json.loads(row["payload"]).get("selection")
+        if selection:
+            return selection
+    return None
 
 
 def conversation_reference(conversation):
@@ -303,10 +325,9 @@ class Sessions:
                     conn.execute("UPDATE session_inputs SET status='handled' WHERE segment_id=?", (item['seg']['id'],))
             return sid, 'The action is queued; completion is not yet confirmed.'
         external = None
-        if (route.get("model") is not None or route.get("effort") is not None) and (
-            sid or action == "continue_session"
-        ):
-            raise ValueError("Model choices apply to a new session. Ask to start a new session with that model.")
+        explicit = route.get("model") is not None or route.get("effort") is not None
+        if explicit and not sid and action == "continue_session":
+            raise ValueError("Which work session should use that model?")
         if isinstance(sid, str) and sid.startswith("thread:"):
             thread = sid[len("thread:") :]
             external = self.backend.settings(thread)
@@ -362,11 +383,23 @@ class Sessions:
                     payload["conversation"] = conversation
                 cmd = "message"
                 epoch = session["epoch"]
+                if action != "delegate":
+                    # Continuing a background task makes its owner the current
+                    # conversation. Otherwise the next utterance can go back to
+                    # the fast responder while this owner is already answering.
+                    conn.execute("UPDATE work_sessions SET foreground=0 WHERE foreground=1")
+                    conn.execute("UPDATE work_sessions SET foreground=1 WHERE id=?", (sid,))
                 conn.execute(
                     "UPDATE work_sessions SET quiet=0,status=CASE WHEN status='cancelled' THEN 'queued' ELSE status END,updated_at=? WHERE id=?",
                     (time.time(), sid),
                 )
                 reply = "I've queued that for the same work session."
+                change = self._settings_change(conn, session, route, explicit)
+                if change:
+                    conn.execute(
+                        "INSERT INTO session_commands(id,session_id,action,payload,epoch,created_at) VALUES (?,?,?,?,?,?)",
+                        (command_id + ":settings", sid, "settings", json.dumps(change), epoch, time.time()),
+                    )
             else:
                 if action == "continue_session":
                     raise ValueError("Which work session should I continue?")
@@ -388,9 +421,22 @@ class Sessions:
                     raise ValueError(
                         "The daily work-session limit is reached. I have not started an agent."
                     )
-                selected = model_settings.work_selection(
-                    self.cfg, model=route.get("model"), effort=route.get("effort")
+                selected = model_settings.resolve_work(
+                    self.cfg, workload=route.get("workload"),
+                    model=route.get("model"), effort=route.get("effort"),
                 )
+                latency.event("work_selection", action="create", basis=selected["basis"],
+                              workload=selected["workload"], model=selected["model"],
+                              effort=selected["effort"], validated=selected["validated"],
+                              fallback=selected["fallback"])
+                exhausted = model_settings.exhausted_window(model_settings.known_limits())
+                if exhausted:
+                    resets = exhausted.get("resets_at")
+                    when = time.strftime(" until %-I:%M %p", time.localtime(resets)) if resets else ""
+                    raise ValueError(
+                        f"Codex reports its {exhausted.get('label') or 'usage'} limit is used up{when}. "
+                        "I have not started a session."
+                    )
                 sid = key("work", source)
                 name = (route.get("name") or text)[:120]
                 kind = "delegated" if action == "delegate" else "interactive"
@@ -414,7 +460,9 @@ class Sessions:
                 conn.execute("INSERT INTO session_launches VALUES (?,?)", (sid, now))
                 policy = config.render_prompt((config.REPO / "prompts/work-session.md").read_text(), self.cfg) + '\n\n' + action_routing.guidance()
                 payload = {
-                    **selected,
+                    "model": selected["model"],
+                    "effort": selected["effort"],
+                    "selection": selected,
                     "cwd": str(cwd),
                     "name": ("Ramble · " if kind == "interactive" else "") + name,
                     "prompt": policy
@@ -452,6 +500,57 @@ class Sessions:
                 )
         return sid, reply
 
+    def _settings_change(self, conn, session, route, explicit):
+        """Settings for a reused owner: explicit choices, or escalation from conversation."""
+        latest = latest_selection(conn, session["id"])
+        if explicit:
+            model = route.get("model") or (latest or {}).get("model") or model_settings.selection(self.cfg, "work")["model"]
+            pair = model_settings.work_selection(self.cfg, model=model, effort=route.get("effort"))
+            selection = {**pair, "basis": "explicit", "workload": route.get("workload"),
+                         "requested": {"model": route.get("model"), "effort": route.get("effort")},
+                         "validated": True, "fallback": None}
+        elif (route.get("workload") == "work" and session["kind"] != "existing"
+              and latest and latest.get("basis") == "conversation"):
+            selection = model_settings.resolve_work(self.cfg, workload="work")
+            selection["fallback"] = selection["fallback"] or "escalated from the conversation pair"
+        else:
+            return None
+        if latest and (latest.get("model"), latest.get("effort")) == (selection["model"], selection["effort"]):
+            return None
+        latency.event("work_selection", session_id=session["id"], action="settings",
+                      basis=selection["basis"], workload=selection.get("workload"),
+                      model=selection["model"], effort=selection["effort"],
+                      validated=selection["validated"], fallback=selection["fallback"])
+        return {"model": selection["model"], "effort": selection["effort"], "selection": selection}
+
+    def _record_applied(self, sid, thread, requested, command_id):
+        """Compare requested and provider-reported settings; never silently accept a mismatch."""
+        try:
+            applied = self.backend.settings(thread)
+        except Exception as exc:  # noqa: BLE001 - observation only
+            log.warning("Applied settings unavailable for %s: %s", sid, exc)
+            return
+        pending = bool((applied.get("permissions") or {}).get("pending_changes")) or bool(applied.get("pending_changes"))
+        got = {"model": applied.get("model"), "effort": applied.get("effort")}
+        want = {k: requested.get(k) for k in ("model", "effort")}
+        mismatch = any(want[k] is not None and want[k] != got[k] for k in want)
+        latency.event("work_settings_applied", session_id=sid, requested_model=want["model"],
+                      requested_effort=want["effort"], applied_model=got["model"],
+                      applied_effort=got["effort"], mismatch=mismatch, pending=pending)
+        text = f"Model {got['model'] or 'provider default'}, reasoning {got['effort'] or 'provider default'}"
+        if requested.get("basis"):
+            text += f" ({requested['basis']})"
+        with self.store.connect() as conn:
+            if mismatch and not pending:
+                log.warning("Work session %s requested %s but provider reports %s", sid, want, got)
+                self.store.event(conn, sid, command_id + ":settings-mismatch", "error",
+                                 f"Requested {want['model']} {want['effort']}, but the provider reports "
+                                 f"{got['model']} {got['effort']}.", {"requested": requested, "applied": got})
+            else:
+                self.store.event(conn, sid, command_id + ":settings-applied", "status",
+                                 text + (" after the current turn" if pending else "") + ".",
+                                 {"requested": requested, "applied": got, "pending": pending})
+
     def _update_command(self, command, status, *, result=None, error=None):
         with self.store.connect() as conn:
             conn.execute(
@@ -474,6 +573,30 @@ class Sessions:
         sid = command["session_id"]
         status = receipt["status"]
         if status not in {"completed", "failed", "uncertain", "cancelled"}:
+            return
+        attempt = json.loads(command.get("native_payload") or "{}").get("attempt", 0) + 1
+        if (status == "failed" and command["action"] == "message"
+                and TURN_CHANGED in (receipt.get("error") or "") and attempt < MAX_SUBMIT_ATTEMPTS):
+            # The ownership guard rejected this before provider submission.
+            # Refresh the turn and resubmit once under a new request key.
+            with self.store.connect() as conn:
+                conn.execute(
+                    "UPDATE session_commands SET status='pending',native_payload=? WHERE id=? AND status='submitted'",
+                    (json.dumps({"attempt": attempt}), command["id"]),
+                )
+            latency.event("work_submit_retry", session_id=sid, attempt=attempt)
+            log.info("Work message %s raced a turn change; retrying with a fresh turn", command["id"])
+            return
+        if command["action"] == "settings":
+            self._update_command(command, status, result=receipt, error=receipt.get("error"))
+            selection = json.loads(command["payload"]).get("selection") or {}
+            session = self.store.get(sid)
+            if status == "completed":
+                self._record_applied(sid, session["thread_id"], selection, command["id"])
+            else:
+                with self.store.connect() as conn:
+                    self.store.event(conn, sid, command["id"] + ":error", "error",
+                                     "The model change was not applied: " + (receipt.get("error") or status))
             return
         self._update_command(
             command, status, result=receipt, error=receipt.get("error")
@@ -531,6 +654,9 @@ class Sessions:
                 )
         if status == "completed" and command["action"] == "create":
             self._watch(sid, receipt["thread_id"])
+            payload = json.loads(command["payload"])
+            requested = payload.get("selection") or {k: payload.get(k) for k in ("model", "effort")}
+            self._record_applied(sid, receipt["thread_id"], requested, command["id"])
 
     def _issue(self, command, session):
         payload = json.loads(command.get("native_payload") or command["payload"])
@@ -538,8 +664,12 @@ class Sessions:
             return self.backend.create(command["id"], payload)
         if command["action"] == "watch":
             return self.backend.command(command["id"], session["thread_id"], "watch")
+        if command["action"] == "settings":
+            change = json.loads(command["payload"])
+            return self.backend.change_settings(
+                request_id(command), session["thread_id"], change["model"], change["effort"])
         return self.backend.command(
-            command["id"],
+            request_id(command),
             session["thread_id"],
             payload["native_action"],
             message=payload.get("message"),
@@ -551,7 +681,7 @@ class Sessions:
         session = self.store.get(sid)
         if command["status"] == "submitted":
             try:
-                receipt = self.backend.status(command["id"])
+                receipt = self.backend.status(request_id(command))
             except Exception as exc:
                 # Exact request IDs allow safe re-query/re-submit only when the
                 # CLI explicitly says no durable request exists.
@@ -559,7 +689,7 @@ class Sessions:
                     raise
                 receipt = self._issue(command, session)
             if command["epoch"] != session["epoch"] and receipt["status"] == "queued":
-                receipt = self.backend.cancel(command["id"])
+                receipt = self.backend.cancel(request_id(command))
             self._finish(command, receipt)
             return
         if command["epoch"] != session["epoch"]:
@@ -596,13 +726,39 @@ class Sessions:
                         "UPDATE work_sessions SET status='cancelled' WHERE id=?", (sid,)
                     )
                 return
+        if action == "settings":
+            if not session["thread_id"]:
+                return  # Applies once creation reports the native conversation.
+            native = {"request_id": command["id"]}
+            with self.store.connect() as conn:
+                conn.execute("UPDATE session_commands SET native_payload=? WHERE id=?",
+                             (json.dumps(native), command["id"]))
+            command = {**command, "native_payload": json.dumps(native)}
+            self._update_command(command, "submitted")
+            self._finish(command, self._issue(command, session))
+            return
         if action in {"message", "stop_work"}:
             if not session["thread_id"]:
                 return
+            with self.store.connect() as conn:
+                change = conn.execute(
+                    "SELECT status,created_at FROM session_commands WHERE session_id=? AND action='settings' "
+                    "AND status IN ('pending','submitted') AND created_at<=? ORDER BY created_at DESC LIMIT 1",
+                    (sid, command["created_at"]),
+                ).fetchone() if action == "message" else None
+            if change and change["status"] == "pending":
+                return  # A model change recorded with this request is submitted first.
             self._watch(sid, session["thread_id"])
             live = self.backend.snapshot(session["thread_id"], session["cursor"])
             if not live.get("connected") or live["status"] == "connecting":
                 return
+            if (change and not live.get("active_turn_id")
+                    and time.time() - change["created_at"] < SETTINGS_WAIT_S):
+                # Agent Coord applies settings only while idle. Let it apply before
+                # this message starts a turn; steering a running turn never waits.
+                return
+            if live.get("status") == "running" and not live.get("active_turn_id"):
+                return  # A turn is starting; its ID is required for steering.
             with self.store.connect() as conn:
                 if action == "message":
                     last_stop = conn.execute(
@@ -630,8 +786,11 @@ class Sessions:
                         "INSERT OR IGNORE INTO session_suppressed_turns VALUES (?,?)",
                         (sid, live["active_turn_id"]),
                     )
+            attempt = json.loads(command.get("native_payload") or "{}").get("attempt", 0)
             payload = {
                 "native_action": "interrupt" if action == "stop_work" else "submit",
+                "attempt": attempt,
+                "request_id": command["id"] + (f"-retry{attempt}" if attempt else ""),
                 "expected": live.get("active_turn_id"),
                 "message": None
                 if action == "stop_work"

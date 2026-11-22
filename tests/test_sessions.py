@@ -176,6 +176,55 @@ class SessionTests(unittest.TestCase):
         )
         self.sessions.tick()
         self.assertEqual(self.backend.created, 1)
+        self.assertTrue(self.store.get(sid)["foreground"])
+
+    def test_continuing_background_task_selects_owner_for_repeated_question(self):
+        previous = self.start()
+        self.cfg["dispatch_daily_cap"] = 2
+        sid, _ = self.sessions.route(
+            {"action": "delegate", "name": "Article selection"},
+            "Find an article to read later", self.items("article"),
+        )
+        self.sessions.tick()
+        self.assertTrue(self.store.get(previous)["foreground"])
+        self.assertFalse(self.store.get(sid)["foreground"])
+        fast = FastLane(self.cfg)
+        fast.sessions = self.sessions
+        self.fast_request(fast, "return-to-article", "Ramble, what article do you have?", {
+            "reply": "I've queued that.", "handoff": False,
+            "route": {"action": "continue_session", "session_id": sid},
+        })
+        self.assertTrue(self.store.get(sid)["foreground"])
+        self.assertFalse(self.store.get(previous)["foreground"])
+        with self.store.connect() as conn:
+            owner = self.sessions.followup_owner(conn, time.time())
+            self.assertEqual(owner["session_id"], sid)
+            repeat = self.items("repeat-question", "Ramble, what article do you have?")[0]
+            repeat["seg"].update(started_at=time.time(), ended_at=time.time() + .1)
+            self.assertTrue(fast.offer(conn, repeat["seg"], repeat["text"]))
+            accepted = fast.q.get_nowait()
+            self.assertEqual(accepted["direct_owner"]["session_id"], sid)
+            with patch.object(fast, "run_codex", side_effect=AssertionError("second responder")):
+                fast.respond(conn, [accepted])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM session_speech").fetchone()[0], 0)
+            targets = {r[0] for r in conn.execute(
+                "SELECT session_id FROM session_commands WHERE action='message'"
+            )}
+            self.assertEqual(targets, {sid})
+        self.assertEqual(self.backend.created, 2)
+
+    def test_background_delegation_to_existing_owner_keeps_current_focus(self):
+        previous = self.start()
+        self.cfg["dispatch_daily_cap"] = 2
+        sid, _ = self.sessions.route(
+            {"action": "delegate"}, "Independent investigation", self.items("background"),
+        )
+        self.sessions.route(
+            {"action": "delegate", "session_id": sid},
+            "Add a second check", self.items("background-followup"),
+        )
+        self.assertTrue(self.store.get(previous)["foreground"])
+        self.assertFalse(self.store.get(sid)["foreground"])
 
     def saved_answer(self, sid, text="[say]Your brief is ready.[/say]\nElections, semiconductors, data centers and AI."):
         with self.store.connect() as c:
@@ -242,12 +291,16 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT COUNT(*) FROM session_launches').fetchone()[0], 0)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM session_commands').fetchone()[0], 0)
 
-    def test_existing_session_cannot_silently_ignore_model_selection(self):
+    def test_existing_session_model_choice_is_recorded_not_ignored(self):
         sid = self.start()
-        with self.assertRaisesRegex(ValueError, 'new session'):
+        models = [{'id': 'gpt-6-astra', 'efforts': ['high', 'max'], 'is_default': True}]
+        with patch.object(model_settings, 'catalog', return_value=models):
             self.sessions.route({'action': 'continue_session', 'session_id': sid,
                                  'model': 'gpt-6-astra', 'effort': 'max'},
                                 'Use Astra max', self.items('model-change'))
+        with self.store.connect() as c:
+            change = c.execute("SELECT payload FROM session_commands WHERE action='settings'").fetchone()
+        self.assertEqual(json.loads(change['payload'])['selection']['basis'], 'explicit')
         self.assertEqual(self.backend.created, 1)
 
     def test_work_route_schema_stays_strict(self):
@@ -263,6 +316,40 @@ class SessionTests(unittest.TestCase):
             self.sessions.accept_input(c, items[0])
             with patch.object(fast, "run_codex", return_value=answer):
                 fast.respond(c, items)
+
+    def test_work_routes_queue_no_dispatcher_speech(self):
+        fast = FastLane(self.cfg)
+        fast.sessions = self.sessions
+        self.cfg["dispatch_daily_cap"] = 3
+        for identifier, answer in (
+            ("work", {"reply": "Opening that.", "handoff": False, "route": {"action": "work"}}),
+            ("delegate", {"reply": "Working on that.", "handoff": False, "route": {"action": "delegate"}}),
+            ("legacy", {"reply": "I'll investigate.", "handoff": True}),
+        ):
+            self.fast_request(fast, identifier, "Ramble, investigate this", answer)
+        with self.store.connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM session_commands").fetchone()[0], 3)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM session_speech").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM session_inputs WHERE status='handled'").fetchone()[0], 3)
+        self.assertEqual(len(fast.history), 3)
+        self.assertTrue(all(speaker == "the user" for _, speaker, _ in fast.history))
+
+    def test_control_receipts_and_routing_failures_are_still_spoken(self):
+        sid = self.start()
+        fast = FastLane(self.cfg)
+        fast.sessions = self.sessions
+        self.fast_request(fast, "quiet-control", "Please be quiet", {
+            "reply": "Quiet.", "handoff": False,
+            "route": {"action": "stop_talking", "session_id": sid},
+        })
+        self.fast_request(fast, "missing-owner", "Return to the missing task", {
+            "reply": "Returning.", "handoff": False,
+            "route": {"action": "continue_session", "session_id": "missing"},
+        })
+        with self.store.connect() as conn:
+            replies = [row[0] for row in conn.execute("SELECT text FROM session_speech ORDER BY created_at")]
+        self.assertEqual(replies[0], "I'll keep working quietly.")
+        self.assertIn("unavailable", replies[1])
 
     def test_quick_exchange_reaches_new_owner_after_queue_restart(self):
         fast = FastLane(self.cfg)

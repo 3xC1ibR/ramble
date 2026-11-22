@@ -62,3 +62,45 @@ returns settings, version and the discovered catalog; `POST` accepts
 Unpaired requests return 401, missing edit headers 403, unsupported selections
 400, stale versions 409 and storage/provider failures 503. No credentials are
 sent to the browser.
+
+## Automatic selection for work sessions
+
+The routing call that already decides a work route also labels its workload, so
+choosing settings adds no model round trip. `conversation` covers discussion,
+naming, opinions and clarification. `work` covers coding, debugging, investigating
+real systems, sourced research and deliverables; it is the default when unsure.
+
+| Selection | Model and reasoning level |
+|---|---|
+| Explicit spoken choice | Exactly as requested; unsupported pairs are rejected, never substituted |
+| `conversation` | `work_conversation_model` / `work_conversation_effort`; null inherits the quick-reply pair |
+| `work` or unlabeled | The saved work-session pair |
+
+Policy choices are validated against the last discovered catalog, which a daemon
+thread refreshes every minute; the voice path never waits for discovery. An
+unadvertised conversation model falls back to the work pair, and an unsupported
+effort falls back to that model's default. Both fallbacks are recorded. Without
+any discovery the pair is used unvalidated and marked so; the provider still
+rejects invalid settings. When cached provider limits report an exhausted window,
+Ramble says so and starts no session. These limits are a shared reported pool, not
+a per-model allowance; unknown or stale limits do not block.
+
+A conversation session moves to the work pair when a routed or unnamed follow-up
+is labeled `work`, or when a named follow-up delivered directly to its owner is a clear
+work request (implement, build, fix, debug, investigate, research, write a spec…).
+That direct check is local pattern matching, not a model call; anything else
+keeps the current pair. Ramble queues Agent Coord's supported `thread settings` change,
+which applies only while the conversation is idle. An idle owner's message waits up
+to 15 seconds for it; a running turn is steered immediately and the change applies
+to the next turn. Work sessions are never downgraded, and adopted existing
+conversations change only on an explicit request. “Switch this session to Astra
+high” changes that session; an effort alone keeps its current model.
+
+Each create and change records the requested pair, its basis, validation and any
+fallback, then reads back the provider-reported settings. The session history shows
+the applied pair; a mismatch appears as an error rather than passing silently.
+`work_selection` and `work_settings_applied` latency events carry the same fields.
+
+Unnamed follow-up admission runs the quick-reply model at `work_followup_effort`
+(default `low`). A fragment that starts within `fast_name_window_s` of an admitted
+follow-up joins it without another check, matching the addressed path.

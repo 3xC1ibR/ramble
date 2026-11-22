@@ -10,13 +10,14 @@ import json
 import re
 import time
 
-from .direct_routing import request_clauses
+from .direct_routing import instruction_update, request_clauses
 
 
 def capabilities():
-    from . import reminders, time_entries
+    from . import instructions, reminders, time_entries
     return {name: tuple(schema['properties']['operation']['enum']) for name, schema in (
-        ('time_entry', time_entries.ACTION_SCHEMA), ('reminder', reminders.ACTION_SCHEMA))}
+        ('time_entry', time_entries.ACTION_SCHEMA), ('reminder', reminders.ACTION_SCHEMA),
+        ('global_instructions', instructions.ACTION_SCHEMA))}
 
 
 def guidance():
@@ -36,6 +37,8 @@ def intent(text):
         # An embedded imperative in an explanation is not a new action.
         if re.match(r'(?:build|fix|implement|debug|test|explain|investigate|add support|show me how)\b', clause):
             continue
+        if instruction_update(clause):
+            return ('global_instructions', 'update')
         timer = re.search(r'\b(?:toggl|toggle|timers?|time[ -]entr(?:y|ies)|time tracking)\b', clause)
         reminder = re.search(r'\b(?:reminders?|check[ -]ins?)\b', clause)
         if re.match(r'remind me\b', clause):
@@ -72,7 +75,8 @@ def supported(target):
 
 def unavailable(target):
     operation = target[1].replace('_', ' ')
-    name = 'Toggl time entries' if target[0] == 'time_entry' else 'reminders'
+    name = {'time_entry': 'Toggl time entries', 'reminder': 'reminders',
+            'global_instructions': 'global instructions'}[target[0]]
     return f'I cannot {operation} {name} with the installed controls. No action was taken.'
 
 
@@ -82,7 +86,9 @@ def reply_schema(base, target):
     props = schema['properties']
     props['route'] = {'type': 'null'}
     props['handoff'] = {'type': 'boolean', 'enum': [False]}
-    props['reminder' if target[0] == 'time_entry' else 'time_entry'] = {'type': 'null'}
+    for name in capabilities():
+        if name != target[0]:
+            props[name] = {'type': 'null'}
     props[target[0]]['properties']['operation']['enum'] = [target[1]]
     props['resolution'] = {'type': 'string', 'enum': ['action', 'needs_input', 'failed']}
     schema['required'].append('resolution')
@@ -91,8 +97,7 @@ def reply_schema(base, target):
 
 def validate_answer(answer, target):
     action = answer.get(target[0])
-    other = answer.get('reminder' if target[0] == 'time_entry' else 'time_entry')
-    if other is not None:
+    if any(answer.get(name) is not None for name in capabilities() if name != target[0]):
         return False
     if action is not None:
         valid = (isinstance(action, dict) and action.get('operation') == target[1]

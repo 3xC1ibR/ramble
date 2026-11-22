@@ -43,3 +43,8 @@ is not by itself a request for a separate task or owner. When uncertain whether
 the speech is directed to the assistant, return accept=false; a subject change
 alone is not such uncertainty. The only possible positive result is forwarding the exact
 utterance to the supplied existing owner; no other action is available.
+
+Also return `workload` for accepted speech: `work` when the utterance asks for
+coding, debugging, investigating real files or systems, sourced research, writing
+a deliverable or other multi-step tool use; `conversation` for discussion,
+opinions, naming, clarification or answers. Return null when accept=false.

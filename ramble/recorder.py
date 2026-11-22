@@ -25,6 +25,11 @@ log = logging.getLogger("ramble.recorder")
 CHUNK_S = CHUNK / config.SAMPLE_RATE
 SHORT_SPEECH_S = 0.3
 SHORT_SPEECH_CONFIDENCE = 0.9
+CALLBACK_TIMEOUT_S = 5.0
+PROCESSING_TIMEOUT_S = 10.0
+ZERO_INPUT_TIMEOUT_S = 30.0
+RECOVERY_RESET_S = 30.0
+MAX_RETRY_DELAY_S = 30.0
 
 
 class Segmenter:
@@ -193,72 +198,150 @@ class Recorder:
         self.early = None
         self.level = 0.0
         self.error: str | None = None
+        self.on_failure = None
+        self._started_at = 0.0
+        self._last_callback_at = 0.0
+        self._last_processed_at = 0.0
+        self._last_nonzero_at = 0.0
+        self._retry_at = 0.0
+        self._retry_delay = 1.0
 
     @property
     def active(self) -> bool:
-        return self.running
+        return self.running and self._health_error() is None
+
+    def _health_error(self) -> str | None:
+        now = time.monotonic()
+        try:
+            if self.stream is None or not self.stream.active:
+                return "Microphone stream stopped."
+        except Exception as exc:
+            return f"Microphone stream unavailable: {exc}"
+        if self.worker is None or not self.worker.is_alive():
+            return "Microphone processing worker stopped."
+        if now - max(self._started_at, self._last_callback_at) >= CALLBACK_TIMEOUT_S:
+            return "Microphone stopped delivering audio."
+        if now - max(self._started_at, self._last_processed_at) >= PROCESSING_TIMEOUT_S:
+            return "Microphone processing stopped making progress."
+        # Ordinary quiet rooms still contain nonzero microphone noise. Only
+        # sustained, exact digital zero is treated as a broken/muted input.
+        if now - max(self._started_at, self._last_nonzero_at) >= ZERO_INPUT_TIMEOUT_S:
+            return "Microphone is delivering only zero samples."
+        return None
 
     @property
     def speech_active(self) -> bool:
-        return self.running and time.time() - self.last_voice_at < self.cfg["segment_silence_s"] + .2
+        return self.active and time.time() - self.last_voice_at < self.cfg["segment_silence_s"] + .2
 
     def start(self) -> None:
         import sounddevice as sd
 
+        now = time.monotonic()
         if self.running:
+            reason = self._health_error()
+            if reason is None:
+                if now - self._started_at >= RECOVERY_RESET_S:
+                    self._retry_at, self._retry_delay = 0.0, 1.0
+                return
+            self.error = reason
+            log.warning("microphone recovery: %s", reason)
+            if self.on_failure:
+                self.on_failure("Dictation cancelled because microphone capture failed.")
+            self.stop(reset_retry=False)
+        if now < self._retry_at:
+            return
+        self._retry_at = now + self._retry_delay
+        self._retry_delay = min(MAX_RETRY_DELAY_S, self._retry_delay * 2)
+        if self.worker is not None and self.worker.is_alive():
+            self.error = "Previous microphone processing worker has not stopped."
             return
         self.running = True
         self.error = None
         self.q = queue.Queue()
-        self.worker = threading.Thread(target=self._process, name="segmenter", daemon=True)
-        self.worker.start()
+        audio_queue = self.q
+        self._started_at = now
+        self._last_callback_at = self._last_processed_at = self._last_nonzero_at = now
         try:
+            self.worker = threading.Thread(target=self._process, args=(audio_queue,), name="segmenter", daemon=True)
+            self.worker.start()
             self.stream = sd.InputStream(
                 samplerate=config.SAMPLE_RATE,
                 channels=1,
                 dtype="float32",
                 blocksize=CHUNK,
                 device=self.cfg["input_device"],
-                callback=self._callback,
+                callback=lambda *args: self._callback(*args, audio_queue=audio_queue),
             )
             self.stream.start()
+            # A permission prompt/device open can block; give callbacks their
+            # full startup grace period after it returns.
+            self._started_at = time.monotonic()
             log.info("mic on (%s)", self.stream.device)
         except Exception as e:  # noqa: BLE001
             self.error = str(e)
             log.exception("could not open mic")
-            self.running = False
-            self.q.put(None)
+            self.stop(reset_retry=False)
 
-    def stop(self) -> None:
+    def stop(self, *, reset_retry=True) -> None:
         if self.early:
             self.early.reset()
-        if not self.running:
-            return
+        was_running = self.running
         self.running = False
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-        self.q.put(None)
+        self.level = self.last_voice_at = self.last_voice_mono = 0.0
+        if reset_retry:
+            self._retry_at, self._retry_delay = 0.0, 1.0
+            self.error = None
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                log.warning("could not abort microphone stream", exc_info=True)
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    log.warning("could not close microphone stream", exc_info=True)
+        if was_running:
+            self.q.put(None)
         if self.worker:
-            self.worker.join(timeout=10)
-        log.info("mic off")
+            if self.worker.is_alive():
+                self.worker.join(timeout=1)
+            if not self.worker.is_alive():
+                self.worker = None
+        if was_running:
+            log.info("mic off")
 
-    def _callback(self, indata, frames, time_info, status) -> None:
+    def _callback(self, indata, frames, time_info, status, *, audio_queue=None) -> None:
         if status:
             log.debug("stream status: %s", status)
-        self.q.put((time.time() - frames / config.SAMPLE_RATE, indata[:, 0].copy()))
+        audio_queue = self.q if audio_queue is None else audio_queue
+        data = indata[:, 0].copy()
+        nonzero = bool(np.any(data))
+        if not self.running or audio_queue is not self.q or not frames:
+            return
+        now = time.monotonic()
+        self._last_callback_at = now
+        if nonzero:
+            self._last_nonzero_at = now
+        audio_queue.put((time.time() - frames / config.SAMPLE_RATE, data))
 
-    def _process(self) -> None:
+    def set_dictation(self, session_id: str | None, completed=None) -> None:
+        """Serialize mode changes with audio, so no segment straddles modes."""
+        self.q.put(("dictation", session_id, completed))
+
+    def _process(self, audio_queue=None) -> None:
+        audio_queue = self.q if audio_queue is None else audio_queue
         conn = db.connect()
+        source = "mic"
 
         def on_segment(ts, audio):
-            if self.early:
+            if self.early and source == "mic":
                 self.early.finish(ts)
-            if save_segment(conn, ts, audio):
+            if save_segment(conn, ts, audio, source=source):
                 self.last_speech_at = time.time()
                 self.wake.set()
-            elif self.early:
+            elif self.early and source == "mic":
                 self.early.discard(ts)
 
         seg = Segmenter(self.cfg, on_segment,
@@ -271,9 +354,23 @@ class Recorder:
         win_start, rms_max, vad_max = time.time(), 0.0, 0.0
         guarded = False
         while True:
-            item = self.q.get()
+            item = audio_queue.get()
             if item is None:
                 break
+            self._last_processed_at = time.monotonic()
+            if len(item) == 3:
+                _, session_id, completed = item
+                seg.flush()
+                seg.reset()
+                pending = np.zeros(0, dtype=np.float32)
+                if self.early:
+                    self.early.reset()
+                source = f"dictation:{session_id}" if session_id else "mic"
+                seg.on_preview = self.early.offer if self.early and not session_id else None
+                seg.on_discard = self.early.discard if self.early and not session_id else None
+                if completed:
+                    completed()
+                continue
             ts, data = item
             if overlaps_playback(conn, ts, ts + len(data) / config.SAMPLE_RATE):
                 if not guarded:

@@ -22,6 +22,10 @@ class RoutingIntentTests(unittest.TestCase):
             'I asked you to switch to the other session earlier. Did that happen?',
             'Should we create a separate session?',
             'I am thinking about creating a reminder.',
+            'If I say call me coach, will you remember?',
+            'Can you explain how to update global instructions?',
+            'He said "call me coach".',
+            'Use metric units for this chart.',
         ):
             with self.subTest(text=text):
                 self.assertFalse(needs_router(text))
@@ -48,6 +52,12 @@ class RoutingIntentTests(unittest.TestCase):
             'Show my reminders.',
             'Stop talking.',
             'Publish the report in Companion.',
+            'Hey Ramble, call me coach.',
+            'Please call me captain instead.',
+            'Remember that I prefer metric units.',
+            'Update my global instructions to prefer concise replies.',
+            'Use shorter replies from now on.',
+            'Remove that nickname from my saved preferences.',
         ):
             with self.subTest(text=text):
                 self.assertTrue(needs_router(text))

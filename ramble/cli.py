@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -132,6 +133,46 @@ def cmd_say(a) -> None:
     print(f"{'generated' if a.no_play else 'spoke'} via {result.engine}: {result.path} ({result.duration:.2f}s)")
 
 
+def cmd_reading(a) -> None:
+    """Control the installed reader without launching a second playback process."""
+    from .reading import ReadingStore
+    from . import reading_interaction
+
+    store = ReadingStore()
+    try:
+        if a.operation == "start":
+            if a.file:
+                path = Path(a.file).expanduser()
+                if path.stat().st_size > 1_000_000:
+                    raise ValueError("The article file is too large; use at most 1 MB of text.")
+                content = path.read_text()
+            elif a.stdin:
+                content = sys.stdin.read(1_000_001)
+                if len(content) > 1_000_000:
+                    raise ValueError("The article is too large; use at most 1 MB of text.")
+            else:
+                content = a.text
+            result = store.start(content, title=a.title or "Article", source_url=a.source_url,
+                                 request_id=a.request_id)
+        elif a.operation in {"ask", "recap"}:
+            result = reading_interaction.submit_question(getattr(a, "message", ""),
+                        recap=a.operation == "recap", reading_id=a.reading_id, request_id=a.request_id)
+        elif a.operation == "status":
+            result = store.snapshot()
+            result["discussion"] = reading_interaction.snapshot()
+        else:
+            result = store.control(a.operation, reading_id=a.reading_id,
+                                   passage_index=getattr(a, "passage", None), request_id=a.request_id)
+        if a.operation != "status" and isinstance(result.get("reading"), dict):
+            row = result["reading"]
+            result = {"reading_id": row["id"], "title": row["title"], "status": row["status"],
+                      "position": row["position"], "passages": len(row["passages"]),
+                      "controller_online": result["controller_online"]}
+        print(json.dumps(result, ensure_ascii=False))
+    except (ValueError, OSError) as exc:
+        sys.exit(f"ramble: {exc}")
+
+
 def cmd_inject(a) -> None:
     """Create a closed thought from text, skipping audio (tests triage + dispatch)."""
     conn = db.connect()
@@ -196,6 +237,26 @@ def main() -> None:
     sy.add_argument("--output", help="save generated WAV at this path")
     sy.add_argument("--no-play", action="store_true", help="only generate the WAV")
     sy.set_defaults(fn=cmd_say)
+    reading = sub.add_parser("reading", help="persistent article reading and read-along")
+    operations = reading.add_subparsers(dest="operation", required=True)
+    start = operations.add_parser("start", help="read exact article text through the installed app")
+    source = start.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", help="UTF-8 text file containing the article")
+    source.add_argument("--stdin", action="store_true", help="read article text from stdin")
+    source.add_argument("--text", help="article text")
+    start.add_argument("--title")
+    start.add_argument("--source-url", help="original source URL, retained as metadata")
+    start.add_argument("--request-id", help="stable ID for safe retry")
+    start.set_defaults(fn=cmd_reading)
+    for operation in ("status", "pause", "resume", "seek", "recap", "ask"):
+        command = operations.add_parser(operation)
+        command.add_argument("--reading-id", help="reject changes if another article is selected")
+        command.add_argument("--request-id", help="stable ID for safe retry")
+        if operation == "seek":
+            command.add_argument("passage", type=int, help="zero-based passage index; leaves playback paused")
+        if operation == "ask":
+            command.add_argument("message")
+        command.set_defaults(fn=cmd_reading)
     ij = sub.add_parser("inject", help="test: create a thought from text (skips audio)")
     ij.add_argument("text")
     ij.set_defaults(fn=cmd_inject)

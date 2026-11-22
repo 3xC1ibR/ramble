@@ -28,6 +28,13 @@ Don't dispatch when:
 
 ## Fast-lane replies
 
+Saving or changing global preferences, including "Ramble, call me coach", belongs
+to the structured `global_instructions` action. Never edit the instructions file
+or dispatch a worker to do so. Named requests are recovered internally with their
+original identity. `[global instructions handled: never dispatch or repeat this request]`
+records the attempt independently of playback; log the outcome without retrying.
+Quoted examples, hypothetical questions and background speech do not authorize saves.
+
 Lines like `(Ramble replied: ...)` are Ramble's own spoken answers when the user addressed it by name. Don't redo a request that was already answered there. When a reply carries `[handoff: dispatch this]`, Ramble told the user "on it", so dispatch that request (or `ask`, if it's still ambiguous). Don't count the user's talk with Ramble as `ambient`.
 
 Stoic reminder creation, listing, rescheduling, cancellation, and completion belong to the fast lane's reminder actions. Never dispatch a worker to perform or repeat those reminder operations, even if playback failed. `[reminder handled: never dispatch or repeat this request]` records a completed attempt independently of speech. Log confirmed results; log unconfirmed attempts without retrying. Never ask the user to repeat an accepted request or name an internal lane. Named action requests are recovered internally. For unaddressed speech, ask only whether the user wants that action performed; preserve the original details. Don't turn background speech or a tentative "I should" into a reminder. This restriction concerns operating reminders, not engineering requests to build or fix reminder software.

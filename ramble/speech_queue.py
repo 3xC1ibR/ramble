@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 import uuid
-from . import latency, speech, state
+from . import latency, speech, state, reading_interaction
 
 log = logging.getLogger("ramble.speech_queue")
 
@@ -54,7 +54,7 @@ class SpeechQueue:
                     session_id,
                     text,
                     kind,
-                    {"reply": 0, "result": 1, "progress": 2}[kind],
+                    {"reply": 0, "reading_answer": 0, "result": 1, "progress": 2}[kind],
                     epoch,
                     time.time(),
                     time.time() + ttl,
@@ -71,6 +71,8 @@ class SpeechQueue:
             return save(c)
 
     def cancelled(self, job, stop):
+        if job.get('kind') == 'reading_answer' and not reading_interaction.delivery_allowed(job['id'], self.store.home):
+            return True
         if (
             stop.is_set()
             or time.time() > job["expires_at"]
@@ -152,7 +154,7 @@ class SpeechQueue:
                     job["text"],
                     self.cfg,
                     cancelled=lambda: self.cancelled(job, stop),
-                    origin="reply" if job["kind"] == "reply" else "work",
+                    origin="reply" if job["kind"] in {"reply", "reading_answer"} else "work",
                     **({'on_playback_start': lambda: self.cues.finish_speech_wait(job['id'])}
                        if self.cues else {}),
                 )

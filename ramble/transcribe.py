@@ -124,7 +124,8 @@ class Transcriber:
                 log.exception("whisper warmup failed")
             while not stop.is_set():
                 row = conn.execute(
-                    "SELECT * FROM segments WHERE status='pending' ORDER BY started_at LIMIT 1"
+                    "SELECT * FROM segments WHERE status='pending' "
+                    "ORDER BY (source LIKE 'dictation:%') DESC, started_at LIMIT 1"
                 ).fetchone()
                 self.backlog = conn.execute("SELECT COUNT(*) FROM segments WHERE status='pending'").fetchone()[0]
                 # Off/snooze releases the reservation without changing the mic
@@ -158,6 +159,7 @@ class Transcriber:
             log.exception("early wake preview failed")
 
     def process(self, conn, row) -> None:
+        dictation = row['source'].startswith('dictation:')
         try:
             with latency.span("transcription", segment_id=row["id"]):
                 r = self.transcribe_path(row["audio_path"], segment_id=row["id"])
@@ -171,7 +173,9 @@ class Transcriber:
         segs = r.get("segments") or []
         no_speech = max((s.get("no_speech_prob", 0) for s in segs), default=1.0)
         logprob = float(np.mean([s.get("avg_logprob", -2) for s in segs])) if segs else -2.0
-        if looks_empty(text, no_speech, logprob):
+        # Explicit dictation can legitimately be "Okay" or "Thank you".
+        empty = (not text or (no_speech > .6 and logprob < -1)) if dictation else looks_empty(text, no_speech, logprob)
+        if empty:
             if self.early:
                 self.early.discard(row['started_at'])
             conn.execute(
@@ -188,7 +192,7 @@ class Transcriber:
                 "UPDATE segments SET status='transcribed', text=?, language=?, no_speech_prob=?, avg_logprob=? WHERE id=?",
                 (text, r.get("language"), no_speech, logprob, row["id"]),
             )
-            if self.on_utterance:
+            if self.on_utterance and not dictation:
                 try:
                     self.on_utterance(conn, row, text)
                 except Exception:  # noqa: BLE001
@@ -217,6 +221,15 @@ def stamp(ts: float) -> str:
 def attach_to_thought(conn, cfg: dict, seg, text: str, *, isolated=False) -> str:
     """Append to the open thought if close enough in time, else close it and start a new one."""
     line = f"[{stamp(seg['started_at'])}] {text}"
+    if seg['source'].startswith('dictation:'):
+        tid = seg['source'].split(':', 1)[1]
+        conn.execute(
+            "INSERT INTO thoughts(id,started_at,ended_at,text,status,classification,summary) "
+            "VALUES (?,?,?,?,'done','dictation','Manual dictation') "
+            "ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at,text=thoughts.text || char(10) || excluded.text",
+            (tid, seg['started_at'], seg['ended_at'], line),
+        )
+        return tid
     if isolated:
         # Accepted input has its own lifecycle and cannot postpone an unrelated
         # open thought. Candidate thoughts wait for their admission decision.

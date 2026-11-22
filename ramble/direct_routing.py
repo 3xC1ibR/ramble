@@ -32,6 +32,16 @@ def request_clauses(text):
         yield clause.strip()
 
 
+def instruction_update(clause):
+    """Recognize explicit durable preferences, rather than ordinary task constraints."""
+    return bool(re.search(
+        r'^(?:call me|address me as|refer to me as|stop calling me)\b|'
+        r'^remember (?:that|my|I|to always)\b|'
+        r'^(?:save|add|change|update|edit|remove|delete|clear|forget)\b.{0,120}'
+        r'\b(?:global instructions|saved instructions|global preferences|saved preferences)\b|'
+        r'^from now on\b|\bfrom now on[,.\s]*$', clause, re.I))
+
+
 def needs_router(text):
     """Reserve routing for requested destination changes and adapter operations.
 
@@ -40,11 +50,14 @@ def needs_router(text):
     and arguments for actual routing requests; this helper executes nothing.
     """
     for clause in request_clauses(text):
+        if instruction_update(clause):
+            return True
         if re.search(
             r'^(?:switch to|talk to|start over|new chat)\b|'
             r'^(?:switch|move|send|take|put|route|transfer|hand)\b.{0,100}\b(?:to|into|in|over)\b.{0,100}\b(?:session|thread|conversation|chat|agent)\b|'
             r'^(?:start|create|open|make|launch|use)\b.{0,80}\b(?:session|thread|conversation|chat)\b|'
             r'^delegate\b|'
+            r'^(?:switch|change|set|move|use|run)\b.{0,80}\b(?:reasoning|effort|models?\s+to|gpt[- ]?\d\S*|astra|sol|terra|luna|extra high|xhigh)\b|'
             r'^(?:have|ask|tell|send|launch|spawn|create|start)\s+'
             r'(?:(?:an?|the|another|new|separate|app|background|existing|two|three|four|some|more|those|these|that|my|your|\d+)\s+)*agents?\b',
             clause, re.I,
@@ -61,3 +74,23 @@ def needs_router(text):
         ):
             return True
     return False
+
+
+WORK_REQUEST = re.compile(
+    r'^(?:go ahead and |now |then |next,? )*'
+    r'(?:implement|build|code up|fix|debug|investigate|diagnose|refactor|research|'
+    r'look into|dig into|audit|profile|benchmark|deploy|prototype|reproduce|trace|analy[sz]e|'
+    r'run (?:the |a |some )?(?:tests?|benchmarks?|experiments?|script)|'
+    r'write (?:a |an |the |up )?(?:report|brief|doc|document|spec|script|tests?|function|code|plan|pr|patch)|'
+    r'(?:open|make|create|draft) (?:a |an |the )?(?:pr|pull request|patch|prototype|fix|change|script|report|brief))\b',
+    re.I,
+)
+
+
+def workload_hint(text):
+    """Cheap local label for direct delivery: 'work' for a clear substantive request.
+
+    Returns None otherwise, which leaves the owner's settings unchanged; it never
+    downgrades a session and never runs a model.
+    """
+    return 'work' if any(WORK_REQUEST.match(c) for c in request_clauses(text)) else None

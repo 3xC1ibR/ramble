@@ -44,3 +44,8 @@ credentials.json
 *.token
 *.key
 *.pem
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/

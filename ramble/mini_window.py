@@ -11,14 +11,23 @@ import AppKit as A
 import Foundation as F
 import objc
 
-from . import config
+from . import config, state
 from .activity import Activity, ActivityMonitor, display_level
 
 log = logging.getLogger("ramble.mini")
 COMPACT = (48.0, 22.0)
 EXPANDED = (174.0, 38.0)
-HOVER_COMPACT = (144.0, 34.0)
-HOVER_EXPANDED = (246.0, 38.0)
+CONTROL_WIDTH, CONTROL_HEIGHT, CONTROL_STEP, CONTROL_INSET = 30, 28, 32, 6
+HOVER_COMPACT = (144.0 + CONTROL_STEP, 34.0)
+HOVER_EXPANDED = (246.0 + CONTROL_STEP, 38.0)
+UNDO_WIDTH = CONTROL_WIDTH * 2
+BACKGROUND = (360.0, EXPANDED[1])
+HOVER_BACKGROUND = (BACKGROUND[0] + HOVER_EXPANDED[0] - EXPANDED[0], BACKGROUND[1])
+BACKGROUND_MODES = {"background", "stopping", "stopped", "stop_error"}
+BACKGROUND_LABEL_INSET = 31
+BACKGROUND_ACTION_INSET = CONTROL_INSET * 2
+STATUS_FONT_SIZE = 11
+FOREGROUND_COLOR = (.94, .95, .98)
 COLORS = {
     "idle": (.52, .86, .73), "off": (.55, .57, .61), "paused": (.92, .70, .36),
     "listening": (.55, .91, .78), "awake": (.75, .69, 1.0),
@@ -26,6 +35,10 @@ COLORS = {
     "working": (.67, .75, 1.0), "processing": (.63, .78, .94),
     "starting": (.63, .78, .94), "error": (1.0, .57, .50),
 }
+COLORS["dictation"] = COLORS["listening"]
+COLORS["pasted"] = COLORS["processing"]
+for _mode in BACKGROUND_MODES:
+    COLORS[_mode] = COLORS["error" if _mode == "stop_error" else "working"]
 
 
 def color(rgb, alpha=1):
@@ -70,9 +83,22 @@ class MiniView(A.NSView):
         self.reduced_motion = False
         self.controls_visible = False
         self.tracking = None
+        self.pause_button = self.make_button("pause.fill", "Pause Ramble…", "togglePause:")
         self.model_button = self.make_button("sparkles", "Choose model and reasoning", "chooseModel:")
         self.settings_button = self.make_button("arrow.up.left.and.arrow.down.right",
                                                 "Open Ramble", "openSettings:")
+        self.undo_button = self.make_button("arrow.uturn.backward", "Undo dictation paste", "undoDictation:")
+        self.undo_button.setImagePosition_(A.NSImageLeft)
+        self.undo_button.setAttributedTitle_(F.NSAttributedString.alloc().initWithString_attributes_("Undo", {
+            A.NSFontAttributeName: A.NSFont.systemFontOfSize_weight_(STATUS_FONT_SIZE, A.NSFontWeightMedium),
+            A.NSForegroundColorAttributeName: color(FOREGROUND_COLOR),
+        }))
+        self.stop_button = self.make_button("stop.fill", "Stop background work", "stopBackground:")
+        self.stop_button.setImagePosition_(A.NSImageLeft)
+        self.stop_button.setAttributedTitle_(F.NSAttributedString.alloc().initWithString_attributes_("Stop", {
+            A.NSFontAttributeName: A.NSFont.systemFontOfSize_weight_(STATUS_FONT_SIZE, A.NSFontWeightMedium),
+            A.NSForegroundColorAttributeName: color(FOREGROUND_COLOR),
+        }))
         self.setAccessibilityElement_(True)
         self.setAccessibilityRole_(A.NSAccessibilityGroupRole)
         self.setAccessibilityLabel_("Ramble · microphone off")
@@ -80,12 +106,12 @@ class MiniView(A.NSView):
 
     @objc.python_method
     def make_button(self, symbol, label, action):
-        button = MiniButton.alloc().initWithFrame_(F.NSMakeRect(0, 0, 30, 28))
+        button = MiniButton.alloc().initWithFrame_(F.NSMakeRect(0, 0, CONTROL_WIDTH, CONTROL_HEIGHT))
         button.setBordered_(False)
         button.setButtonType_(A.NSButtonTypeMomentaryChange)
         button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, label))
         button.setImagePosition_(A.NSImageOnly)
-        button.setContentTintColor_(color((.94, .95, .98)))
+        button.setContentTintColor_(color(FOREGROUND_COLOR))
         button.setTarget_(self)
         button.setAction_(action)
         button.setRefusesFirstResponder_(True)
@@ -98,11 +124,51 @@ class MiniView(A.NSView):
     @objc.python_method
     def layout_controls(self):
         size = self.bounds().size
-        normal, expanded = (COMPACT, HOVER_COMPACT) if self.activity.compact else (EXPANDED, HOVER_EXPANDED)
+        normal, expanded = MiniWindow.target_size(self.activity, False), MiniWindow.target_size(self.activity, True)
         reveal = self.controls_visible and size.width >= normal[0] + .75 * (expanded[0] - normal[0])
-        for button, x in ((self.model_button, 6), (self.settings_button, size.width - 36)):
-            button.setFrame_(F.NSMakeRect(x, (size.height - 28) / 2, 30, 28))
+        right = size.width - CONTROL_INSET - CONTROL_WIDTH
+        for button, x in ((self.pause_button, CONTROL_INSET),
+                          (self.model_button, right - CONTROL_STEP), (self.settings_button, right)):
+            button.setFrame_(F.NSMakeRect(x, (size.height - CONTROL_HEIGHT) / 2, CONTROL_WIDTH, CONTROL_HEIGHT))
             button.setHidden_(not reveal)
+        fraction = min(1, max(0, (size.width - normal[0]) / (expanded[0] - normal[0])))
+        offset = (size.width - EXPANDED[0]) / 2 - CONTROL_STEP / 2 * fraction
+        self.undo_button.setFrame_(F.NSMakeRect(offset + EXPANDED[0] - CONTROL_INSET * 2 - UNDO_WIDTH,
+                                               (size.height - CONTROL_HEIGHT) / 2, UNDO_WIDTH, CONTROL_HEIGHT))
+        self.undo_button.setHidden_(self.activity.mode != "pasted" or size.width < EXPANDED[0])
+        work_offset = (size.width - BACKGROUND[0]) / 2 - CONTROL_STEP / 2 * fraction
+        self.stop_button.setFrame_(F.NSMakeRect(work_offset + BACKGROUND[0] - BACKGROUND_ACTION_INSET - UNDO_WIDTH,
+                                               (size.height - CONTROL_HEIGHT) / 2, UNDO_WIDTH, CONTROL_HEIGHT))
+        self.stop_button.setHidden_(self.activity.mode not in {"background", "stop_error", "stopping"}
+                                   or size.width < BACKGROUND[0])
+        self.stop_button.setEnabled_(self.activity.target is not None)
+
+    def undoDictation_(self, sender):
+        if self.owner and self.owner.undo_dictation:
+            self.owner.undo_dictation()
+
+    def stopBackground_(self, sender):
+        if self.owner and self.activity.target:
+            self.owner.monitor.stop_background(self.activity.target)
+            self.stop_button.setEnabled_(False)
+
+    @objc.python_method
+    def update_pause_control(self, paused):
+        label = "Resume Ramble" if paused else "Pause Ramble…"
+        if self.pause_button.accessibilityLabel() != label:
+            symbol = "play.fill" if paused else "pause.fill"
+            self.pause_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, label))
+            self.pause_button.setAccessibilityLabel_(label)
+            self.pause_button.setToolTip_(label)
+
+    def togglePause_(self, sender):
+        if self.owner:
+            self.owner.toggle_pause()
+
+    def pauseFor_(self, sender):
+        if self.owner and self.owner.pause:
+            self.owner.pause(sender.tag())
+            self.owner.refresh_pause_control()
 
     def updateTrackingAreas(self):
         objc.super(MiniView, self).updateTrackingAreas()
@@ -169,10 +235,13 @@ class MiniView(A.NSView):
         mode = self.activity.mode
         rgb = COLORS["awake" if self.activity.awake else mode]
         mid = height / 2
+        normal, hover = MiniWindow.target_size(self.activity, False), MiniWindow.target_size(self.activity, True)
+        reveal_fraction = min(1, max(0, (width - normal[0]) / (hover[0] - normal[0])))
+        center = width / 2 - CONTROL_STEP / 2 * reveal_fraction
         if self.activity.compact:
-            offset = (width - COMPACT[0]) / 2
+            offset = center - COMPACT[0] / 2
             if self.controls_visible:
-                pill(F.NSMakeRect(width / 2 - 19, mid - 13, 38, 26), 13, color((.20, .21, .24)))
+                pill(F.NSMakeRect(center - 19, mid - 13, 38, 26), 13, color((.20, .21, .24)))
             if mode == "paused":
                 for x in (14, 19):
                     pill(F.NSMakeRect(offset + x, mid - 3.5, 2, 7), 1, color(rgb))
@@ -188,12 +257,12 @@ class MiniView(A.NSView):
         # Clip during the size transition; draw at final size around its center.
         A.NSGraphicsContext.saveGraphicsState()
         background.addClip()
-        offset = (width - EXPANDED[0]) / 2
+        offset = center - normal[0] / 2
         x = offset + 18
         if mode == "error":
             pill(F.NSMakeRect(x - 1, mid - 1, 2, 7), 1, color(rgb))
             pill(F.NSMakeRect(x - 1, mid - 5, 2, 2), 1, color(rgb))
-        elif mode in {"awake", "working"}:
+        elif mode in {"awake", "working", "background", "stopping"}:
             pulse = 0 if self.reduced_motion else (math.sin(self.phase * 3) + 1) / 2
             ring = A.NSBezierPath.bezierPathWithOvalInRect_(F.NSMakeRect(x - 5, mid - 5, 10, 10))
             color(rgb, .45 + .4 * pulse).setStroke()
@@ -203,12 +272,21 @@ class MiniView(A.NSView):
         else:
             pill(F.NSMakeRect(x - 3, mid - 3, 6, 6), 3, color(rgb))
         attrs = {
-            A.NSFontAttributeName: A.NSFont.systemFontOfSize_weight_(11, A.NSFontWeightMedium),
-            A.NSForegroundColorAttributeName: color((.94, .95, .98)),
+            A.NSFontAttributeName: A.NSFont.systemFontOfSize_weight_(STATUS_FONT_SIZE, A.NSFontWeightMedium),
+            A.NSForegroundColorAttributeName: color(FOREGROUND_COLOR),
         }
-        F.NSString.stringWithString_(self.activity.label).drawAtPoint_withAttributes_(
-            F.NSMakePoint(offset + 31, mid - 7), attrs)
-        if mode in {"listening", "speaking"}:
+        if mode in BACKGROUND_MODES:
+            paragraph = A.NSMutableParagraphStyle.alloc().init()
+            paragraph.setLineBreakMode_(A.NSLineBreakByTruncatingTail)
+            attrs[A.NSParagraphStyleAttributeName] = paragraph
+            F.NSString.stringWithString_(self.activity.label).drawInRect_withAttributes_(
+                F.NSMakeRect(offset + BACKGROUND_LABEL_INSET, mid - 7,
+                             BACKGROUND[0] - BACKGROUND_LABEL_INSET - UNDO_WIDTH - BACKGROUND_ACTION_INSET * 2,
+                             STATUS_FONT_SIZE * 2), attrs)
+        else:
+            F.NSString.stringWithString_(self.activity.label).drawAtPoint_withAttributes_(
+                F.NSMakePoint(offset + 31, mid - 7), attrs)
+        if mode in {"listening", "speaking", "dictation"}:
             for i, level in enumerate(self.levels):
                 bar_height = 3 + level * 18
                 pill(F.NSMakeRect(offset + 112 + i * 3.6, mid - bar_height / 2, 2.1, bar_height),
@@ -218,7 +296,7 @@ class MiniView(A.NSView):
                 scale = 1 if self.reduced_motion else .8 + .2 * math.sin(self.phase * 3)
                 pill(F.NSMakeRect(offset + 124 + i * 5, mid - h * scale / 2, 2.5, h * scale),
                      1.25, color(rgb))
-        elif mode != "error":
+        elif mode not in {"error", "pasted"} | BACKGROUND_MODES:
             # An indeterminate animation, deliberately distinct from audio bars.
             for i in range(3):
                 pulse = .5 if self.reduced_motion else (math.sin(self.phase * 4 - i * .9) + 1) / 2
@@ -229,7 +307,16 @@ class MiniView(A.NSView):
 
 
 class MiniWindow:
-    def __init__(self, daemon, *, monitor=None, model_menu=None, open_settings=None):
+    @staticmethod
+    def target_size(activity, controls):
+        if activity.mode in BACKGROUND_MODES:
+            return HOVER_BACKGROUND if controls else BACKGROUND
+        if activity.compact:
+            return HOVER_COMPACT if controls else COMPACT
+        return HOVER_EXPANDED if controls else EXPANDED
+
+    def __init__(self, daemon, *, monitor=None, model_menu=None, open_settings=None, pause=None, resume=None,
+                 undo_dictation=None):
         self.monitor = monitor or ActivityMonitor(daemon)
         self.daemon = daemon
         self.path = config.HOME / "mini-window.json"
@@ -240,8 +327,11 @@ class MiniWindow:
         self.hover_until = 0.0
         self.model_menu = model_menu
         self.open_settings = open_settings
+        self.pause, self.resume = pause, resume
+        self.undo_dictation = undo_dictation
         self.last_tick = time.monotonic()
         self.last_layout = 0.0
+        self.pause_checked_at = float('-inf')
         self.smoothed_level = 0.0
         self.timer = None
         self.interval = None
@@ -265,6 +355,16 @@ class MiniWindow:
         self.view.owner = self
         self.panel.setContentView_(self.view)
         self.menu = A.NSMenu.alloc().initWithTitle_("Ramble")
+        self.pause_menu = A.NSMenu.alloc().initWithTitle_("Pause Ramble")
+        for label, seconds in (("Pause 15 minutes", 900), ("Pause 1 hour", 3600), ("Pause 3 hours", 10800)):
+            item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, "pauseFor:", "")
+            item.setTarget_(self.view)
+            item.setTag_(seconds)
+            self.pause_menu.addItem_(item)
+        self.pause_item = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Pause Ramble…", "togglePause:", "")
+        self.pause_item.setTarget_(self.view)
+        self.menu.addItem_(self.pause_item)
+        self.menu.addItem_(A.NSMenuItem.separatorItem())
         reset = A.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Reset position", "resetPosition:", "")
         reset.setTarget_(self.view)
         for label, action in (("Models and reasoning…", "chooseModel:"), ("Open Ramble…", "openSettings:")):
@@ -278,6 +378,19 @@ class MiniWindow:
         self._set_timer(.2)
         if self.visible:
             self.panel.orderFrontRegardless()
+
+    def refresh_pause_control(self):
+        paused = state.is_paused()
+        self.view.update_pause_control(paused)
+        self.pause_item.setTitle_("Resume Ramble" if paused else "Pause Ramble…")
+
+    def toggle_pause(self):
+        if state.is_paused():
+            if self.resume:
+                self.resume(None)
+        elif self.pause:
+            self.popup(self.pause_menu)
+        self.refresh_pause_control()
 
     def set_hovered(self, hovered):
         self.hovered = bool(hovered)
@@ -376,9 +489,16 @@ class MiniWindow:
 
     def tick(self):
         now = time.monotonic()
+        if now - self.pause_checked_at >= .2:
+            self.refresh_pause_control()
+            self.pause_checked_at = now
         dt = min(.2, max(0.0, now - self.last_tick))
         self.last_tick = now
+        controls = self.hovered or self.menu_open or self.dragging or now < self.hover_until
         current = self.monitor.current
+        if (current.mode in {"idle", "off", "processing"} or (controls and current.mode == "working")) \
+                and hasattr(self.monitor, "background_activity"):
+            current = self.monitor.background_activity(hover=controls) or current
         changed = current != self.view.activity
         if changed:
             self.view.levels = deque([0.0] * 13, maxlen=13)
@@ -390,11 +510,9 @@ class MiniWindow:
             self._set_timer(.2)
             return
         self.view.reduced_motion = A.NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
-        controls = self.hovered or self.menu_open or self.dragging or now < self.hover_until
         controls_changed = controls != self.view.controls_visible
         self.view.controls_visible = controls
-        target = ((HOVER_COMPACT if current.compact else HOVER_EXPANDED) if controls else
-                  COMPACT if current.compact else EXPANDED)
+        target = self.target_size(current, controls)
         frame = self.panel.frame()
         resizing = abs(frame.size.width - target[0]) > .2 or abs(frame.size.height - target[1]) > .2
         if not self.dragging and (resizing or now - self.last_layout > 1):
@@ -408,7 +526,7 @@ class MiniWindow:
         self.view.layout_controls()
         self._set_timer(1 / 30 if not current.compact or resizing else .2)
         level = (self.monitor.output_level if current.mode == "speaking" else
-                 self.daemon.recorder.level if current.mode == "listening" else 0.0)
+                 self.daemon.recorder.level if current.mode in {"listening", "dictation"} else 0.0)
         target_level = display_level(level)
         self.smoothed_level += (target_level - self.smoothed_level) * (1 - math.exp(-dt / .045))
         self.view.levels.append(self.smoothed_level)

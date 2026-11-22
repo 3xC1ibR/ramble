@@ -324,6 +324,9 @@ class Router:
         return decision
 
     def triage(self, conn, thought) -> None:
+        if thought['classification'] == 'dictation':
+            conn.execute("UPDATE thoughts SET status='done' WHERE id=?", (thought['id'],))
+            return
         if state.is_paused():
             return
         if conn.execute(
@@ -402,7 +405,8 @@ class Router:
                 # promise another component has a capability it lacks.
                 item['action'], item['dispatch'] = 'ask', None
                 item['question'] = ("Do you want me to handle that "
-                                    + ('timer' if target[0] == 'time_entry' else 'reminder')
+                                    + {'time_entry': 'timer', 'reminder': 'reminder',
+                                       'global_instructions': 'global instruction'}[target[0]]
                                     + ' request?' if action_routing.supported(target)
                                     else action_routing.unavailable(target))
             if item.get("action") == "dispatch" and item.get("dispatch"):

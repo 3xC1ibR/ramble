@@ -1,6 +1,7 @@
 # Agent notes for ramble
 
 Read `README.md` first; it has the architecture, data layout, settings and code map.
+Before any UI change, read `DESIGN.md` and follow the interface-design skill (contract, tokens, screenshots).
 
 ## Companion experience
 

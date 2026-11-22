@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import logging
 import hashlib
 import json
 import math
@@ -16,13 +17,18 @@ import time
 
 from . import config
 
+log = logging.getLogger("ramble.models")
 LANES = {
     "fast": ("Quick voice replies", "fast_model", "fast_effort"),
     "triage": ("Thought review", "triage_model", "triage_effort"),
     "work": ("New work sessions", "work_session_model", "work_session_effort"),
 }
+WORKLOADS = ("conversation", "work")
 _catalog_lock = threading.Lock()
 _cached_catalog = (0, None)
+_last_catalog = None  # last successful discovery, retained for non-blocking validation
+_limits_lock = threading.Lock()
+_cached_limits = (0, None)
 
 
 class ConflictError(ValueError):
@@ -92,6 +98,136 @@ def work_selection(cfg, *, model=None, effort=None):
     return selected
 
 
+def _override_pair(cfg, model_key, effort_key):
+    _, overrides, _ = _read()
+    return overrides.get(model_key, cfg.get(model_key)), overrides.get(effort_key, cfg.get(effort_key))
+
+
+def known_catalog():
+    """Return the last discovered catalog without blocking (None before discovery)."""
+    return _cached_catalog[1] if _cached_catalog[1] is not None else _last_catalog
+
+
+def run_discovery(stop, interval_s=60):
+    """Daemon-owned refresh, so the voice path validates without waiting on discovery."""
+    while not stop.is_set():
+        for refresh in (catalog, provider_limits):
+            try:
+                refresh()
+            except OSError as exc:
+                log.info("model discovery: %s", exc)
+        stop.wait(interval_s)
+
+
+def _validate_profile(pair, models, fallback_pair):
+    """Validate a policy-chosen pair. Policy choices may fall back; explicit ones never do."""
+    if models is None:
+        return pair, False, None
+    by_id = {m["id"]: m for m in models}
+    if pair["model"] is None:
+        return pair, True, None
+    chosen = by_id.get(pair["model"])
+    if chosen is None:
+        if fallback_pair is not None:
+            return fallback_pair, True, f"model {pair['model']} is not advertised; used the saved work pair"
+        return pair, False, f"model {pair['model']} is not advertised"
+    if pair["effort"] is not None and pair["effort"] not in chosen["efforts"]:
+        return ({"model": pair["model"], "effort": chosen.get("default_effort")}, True,
+                f"effort {pair['effort']} is unsupported by {pair['model']}; used its default")
+    return pair, True, None
+
+
+def resolve_work(cfg, *, workload=None, model=None, effort=None):
+    """Choose a work-session pair as an explicit, recorded routing decision.
+
+    Explicit user choices are validated against live discovery and never
+    substituted. Otherwise the router's workload selects a profile: conversation
+    uses the low-latency conversation pair (default: the quick-reply pair), and
+    work uses the saved work-session defaults. Validation uses the last known
+    catalog so discovery never blocks the voice path.
+    """
+    requested = {"model": model, "effort": effort}
+    if model is not None or effort is not None:
+        selected = work_selection(cfg, model=model, effort=effort)
+        return {**selected, "basis": "explicit", "workload": workload, "requested": requested,
+                "validated": True, "fallback": None}
+    saved = selection(cfg, "work")
+    if workload == "conversation":
+        conv_model, conv_effort = _override_pair(cfg, "work_conversation_model", "work_conversation_effort")
+        if conv_model is None and conv_effort is None:
+            fast = selection(cfg, "fast")
+            conv_model, conv_effort = fast["model"], fast["effort"]
+        pair, validated, fallback = _validate_profile(
+            {"model": conv_model, "effort": conv_effort}, known_catalog(), saved)
+        basis = "work" if pair is saved else "conversation"
+    else:
+        pair, validated, fallback = _validate_profile(saved, known_catalog(), None)
+        basis = "work"
+    return {**pair, "basis": basis, "workload": workload, "requested": requested,
+            "validated": validated, "fallback": fallback}
+
+
+def followup_selection(cfg):
+    """Admission is a small classification: quick-reply model at a low effort."""
+    fast = selection(cfg, "fast")
+    _, overrides, _ = _read()
+    effort = overrides.get("work_followup_effort", cfg.get("work_followup_effort")) or fast["effort"]
+    models = known_catalog()
+    chosen = next((m for m in models or [] if m["id"] == fast["model"]), None)
+    if chosen is not None and effort not in chosen["efforts"]:
+        effort = fast["effort"]
+    return {"model": fast["model"], "effort": effort}
+
+
+def provider_limits(client="codex", home=None):
+    """Read reported quota windows through the running app (bounded, never a model turn)."""
+    global _cached_limits
+    with _limits_lock:
+        stamp, value = _cached_limits
+        if value is not None and time.monotonic() - stamp < 120:
+            return value
+        launcher = Path.home() / '.local/bin/agent-coord'
+        cli = os.environ.get('AGENT_COORD_CLI') or (str(launcher) if launcher.is_file() else shutil.which('agent-coord'))
+        if not cli:
+            raise OSError("Agent Coord launcher is unavailable.")
+        receipt, result = {}, None
+        try:
+            caller = os.environ.get('AGENT_COORD_SESSION_ID') or os.environ.get('CODEX_THREAD_ID')
+            if not caller:
+                caller = ((home if home is not None else config.HOME) / 'agent_coord_session').read_text().strip()
+            result = subprocess.run(
+                [cli, "thread", "provider-limits", "--client", client, "--from-session", caller, "--wait", "5"],
+                capture_output=True, text=True, timeout=10,
+            )
+            receipt = json.loads(result.stdout) if result.returncode == 0 else {}
+            provider = receipt["result"]["provider"]
+        except subprocess.TimeoutExpired as exc:
+            raise OSError("Provider limits are unavailable: discovery timed out.") from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            detail = (receipt.get("error") if isinstance(receipt, dict) else None) or (
+                (result.stderr or result.stdout or "").strip()[-200:] if result else "")
+            raise OSError(f"Provider limits are unavailable: {detail or 'no result'}") from exc
+        _cached_limits = (time.monotonic(), provider)
+        return provider
+
+
+def known_limits():
+    """Return cached limits without blocking; stale beyond ten minutes counts as unknown."""
+    stamp, value = _cached_limits
+    return value if value is not None and time.monotonic() - stamp < 600 else None
+
+
+def exhausted_window(provider, now=None):
+    """Return the exhausted reported window, if any. Shared pools are not per-model proof."""
+    now = time.time() if now is None else now
+    for window in (provider or {}).get("windows", []):
+        used = window.get("used_percent")
+        resets = window.get("resets_at")
+        if isinstance(used, (int, float)) and used >= 100 and (not resets or resets > now):
+            return window
+    return None
+
+
 def work_routing_context(cfg):
     """Supply live choices for a routing request without starting a model turn."""
     defaults = selection(cfg, "work")
@@ -144,7 +280,9 @@ def catalog(home=None):
                 raise ValueError("No models returned.")
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
             raise OSError("Models are unavailable. Check Ribbon Field on the Mac, then reload settings.") from exc
+        global _last_catalog
         _cached_catalog = (time.monotonic(), models)
+        _last_catalog = models
         return models
 
 

@@ -81,6 +81,44 @@ class WorkFollowupTests(unittest.TestCase):
             self.fast.respond_candidate(self.conn, item, threading.Event())
         return model
 
+    def test_admission_runs_low_effort_and_passes_workload_to_owner(self):
+        self.transcribe(QUESTION)
+        item = self.fast.candidates.get_nowait()
+        with patch.object(self.fast, 'run_codex', return_value={'accept': True, 'workload': 'work'}) as model, \
+                patch.object(self.sessions, 'route', wraps=self.sessions.route) as route:
+            self.fast.respond_candidate(self.conn, item, threading.Event())
+        self.assertEqual(model.call_args.kwargs['selected']['effort'], 'low')
+        self.assertEqual(model.call_args.kwargs['schema'], FOLLOWUP_SCHEMA)
+        self.assertEqual(route.call_args.args[0]['workload'], 'work')
+        self.assertEqual(set(FOLLOWUP_SCHEMA['properties']), set(FOLLOWUP_SCHEMA['required']))
+
+    def test_split_utterance_fragment_is_admitted_without_second_classification(self):
+        self.transcribe('If you had to give it a name, to what', 'part-1', start=self.now)
+        first = self.fast.candidates.get_nowait()
+        self.transcribe("I'm building. What would you call it?", 'part-2', start=self.now + 3)
+        second = self.fast.candidates.get_nowait()
+        self.transcribe('Separately, what about lunch?', 'part-3', start=self.now + 30)
+        third = self.fast.candidates.get_nowait()
+        with patch.object(self.fast, 'run_codex', return_value={'accept': True, 'workload': 'conversation'}) as model:
+            for item in (first, second, third):
+                self.fast.respond_candidate(self.conn, item, threading.Event())
+        # The adjacent fragment rides on the first admission; a later utterance is checked again.
+        self.assertEqual(model.call_count, 2)
+        messages = [json.loads(r['payload'])['message'] for r in self.conn.execute(
+            "SELECT payload FROM session_commands WHERE action='message' ORDER BY created_at")]
+        self.assertEqual(len(messages), 3)
+
+    def test_rejected_admission_opens_no_continuation_window(self):
+        self.transcribe('Maybe tests would help', 'part-1', start=self.now)
+        first = self.fast.candidates.get_nowait()
+        self.transcribe('Yeah, probably', 'part-2', start=self.now + 3)
+        second = self.fast.candidates.get_nowait()
+        with patch.object(self.fast, 'run_codex', return_value={'accept': False, 'workload': None}) as model:
+            for item in (first, second):
+                self.fast.respond_candidate(self.conn, item, threading.Event())
+        self.assertEqual(model.call_count, 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM session_commands").fetchone()[0], 0)
+
     def test_observed_question_reaches_exact_native_owner_without_new_worker(self):
         self.transcribe(QUESTION)
         item = self.fast.candidates.get_nowait()
@@ -141,8 +179,12 @@ class WorkFollowupTests(unittest.TestCase):
         context = json.loads(model.call_args.args[0].split('\n\n')[-1])
         self.assertEqual(context['work']['seconds_since_conversation'], 13)
         self.assertEqual(context['utterance'], question)
-        event.assert_called_with('work_followup_decision', segment_id='candidate',
-                                 session_id='owner', accepted=True, seconds_since_conversation=13)
+        decision = event.call_args
+        self.assertEqual(decision.args, ('work_followup_decision',))
+        self.assertEqual({k: decision.kwargs[k] for k in ('segment_id', 'session_id', 'accepted', 'basis',
+                                                          'seconds_since_conversation')},
+                         {'segment_id': 'candidate', 'session_id': 'owner', 'accepted': True,
+                          'basis': 'classifier', 'seconds_since_conversation': 13})
         thought = self.conn.execute('SELECT * FROM thoughts WHERE id=?', (row['thought_id'],)).fetchone()
         with patch.object(self.router, 'run_triage') as triage:
             self.router.triage(self.conn, thought)

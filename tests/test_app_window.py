@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import AppKit as A
 import Foundation as F
 
-from ramble import config, instructions, usage
+from ramble import config, instructions, state, usage
 from ramble.app_window import RambleWindow, number
 
 
@@ -27,7 +27,7 @@ class AppWindowTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="ramble-test-window-", dir="/tmp")
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
-        self.enterContext(patch.object(config, "HOME", self.home))
+        self.enterContext(patch.multiple(config, HOME=self.home, STATE_PATH=self.home / "state.json"))
         self.app = SimpleNamespace(mini=SimpleNamespace(visible=True, menu_open=False),
                                    model_snapshot=None, model_busy=False, model_error=None,
                                    toggle=Mock(), toggle_voice=Mock(), toggle_mini=Mock())
@@ -45,6 +45,21 @@ class AppWindowTests(unittest.TestCase):
         self.assertFalse((self.home / "state.json").exists())
         self.app.toggle.assert_not_called()
 
+    def test_dictation_shortcut_saves_without_changing_capture_and_preserves_failed_draft(self):
+        self.app.save_dictation_shortcut = Mock(return_value="Control+Option+D")
+        self.window.shortcut_field.setStringValue_("ctrl+alt+d")
+        self.window.shortcut_button.performClick_(None)
+        self.app.save_dictation_shortcut.assert_called_once_with("ctrl+alt+d")
+        self.assertEqual(self.window.shortcut_field.stringValue(), "Control+Option+D")
+        self.assertIn("saved", self.window.shortcut_note.stringValue())
+        self.app.save_dictation_shortcut.side_effect = ValueError("Shortcut unavailable")
+        self.window.shortcut_field.setStringValue_("Control+Space")
+        self.window.shortcut_button.performClick_(None)
+        self.assertEqual(self.window.shortcut_field.stringValue(), "Control+Space")
+        self.assertEqual(self.window.shortcut_note.stringValue(), "Shortcut unavailable")
+        self.app.toggle.assert_not_called()
+        self.assertFalse((self.home / "state.json").exists())
+
     def test_native_keyboard_menu_and_text_undo_are_available(self):
         menu = A.NSApplication.sharedApplication().mainMenu()
         edit = menu.itemAtIndex_(1).submenu()
@@ -53,6 +68,19 @@ class AppWindowTests(unittest.TestCase):
         self.assertEqual(keys["Paste"], "v")
         self.assertEqual(keys["Undo"], "z")
         self.assertTrue(self.window.editor.allowsUndo())
+
+    def test_reading_navigation_reuses_window_and_preserves_settings_draft(self):
+        self.window.editor.setString_('Unsaved settings draft')
+        with patch.object(self.window.reading_view, 'refresh') as refresh:
+            self.window.nav[2].performClick_(None)
+        refresh.assert_called_once()
+        self.assertEqual(self.window.page, 'reading')
+        self.assertFalse(self.window.reading_view.view.isHidden())
+        self.assertTrue(self.window.settings_page.isHidden())
+        self.window.select_page('settings')
+        self.assertTrue(self.window.reading_view.view.isHidden())
+        self.assertEqual(self.window.editor.string(), 'Unsaved settings draft')
+        self.assertFalse((self.home / 'state.json').exists())
 
     def test_native_window_controller_is_reused_and_settings_selects_page(self):
         from ramble.app import RambleApp
@@ -63,6 +91,20 @@ class AppWindowTests(unittest.TestCase):
             RambleApp.open_window(app, "settings")
         create.assert_called_once_with(app)
         self.assertEqual([c.args[0] for c in controller.show.call_args_list], ["usage", "settings"])
+
+    def test_expansion_opens_saved_reading_and_preserves_explicit_navigation(self):
+        self.window.window.orderOut_(None)
+        with patch.object(self.window.reading_view.service, 'store') as store, patch.object(self.window, 'tick'), patch.object(self.window.reading_view, 'refresh'):
+            store.return_value.snapshot.return_value = {'reading': {'status': 'paused'}}
+            self.window.show()
+            self.assertEqual(self.window.page, 'reading')
+            self.window.show('settings')
+            self.assertEqual(self.window.page, 'settings')
+            self.window.show()
+            self.assertEqual(self.window.page, 'settings')
+            self.window.window.orderOut_(None)
+            self.window.show('usage')
+            self.assertEqual(self.window.page, 'usage')
 
     def test_instructions_conflict_keeps_draft_and_external_content(self):
         self.window.editor.setString_("My unsaved draft")
@@ -92,6 +134,64 @@ class AppWindowTests(unittest.TestCase):
         self.window.choose_model(self.window.model_rows[0][2])
         self.assertFalse(self.app.mini.menu_open)
         self.app.mini_model_menu.assert_called_once()
+
+    def test_pause_menu_and_early_resume_use_shared_quiet_pause_state_on_both_pages(self):
+        from ramble.app import RambleApp
+        self.app.tick = Mock()
+        self.app.pause = lambda seconds: RambleApp.pause(self.app, seconds)
+        self.app.resume = lambda sender: RambleApp.resume(self.app, sender)
+        self.window.window.orderFront_(None)
+        with patch.object(config, "ensure_dirs"), patch.object(self.window, "refresh_usage"):
+            for page in ("settings", "usage"):
+                self.window.select_page(page)
+                for index, seconds in enumerate((3600, 10800)):
+                    state.write(True)
+                    self.window.tick()
+                    self.assertEqual(self.window.pause_button.title(), "Pause Ramble…")
+                    self.window.pause_menu.performActionForItemAtIndex_(index)
+                    paused = state.read()
+                    self.assertAlmostEqual(paused["paused_until"] - paused["changed_at"], seconds, delta=.1)
+                    self.assertFalse(state.activity_allowed())
+                    self.assertEqual(self.window.pause_button.title(), "Resume Ramble")
+                    self.assertIn("Paused until", self.window.capture_status.stringValue())
+                    self.window.pause_button.performClick_(None)
+                    self.assertTrue(state.is_listening())
+                    self.assertIsNone(state.read()["paused_until"])
+                    self.assertEqual(state.read()["last_paused_at"], paused["last_paused_at"])
+                    self.assertFalse(state.activity_allowed(paused["changed_at"] - 1))
+                    self.assertEqual(self.window.pause_button.title(), "Pause Ramble…")
+
+    def test_pause_control_tracks_external_changes_and_expiry_without_mutating_state(self):
+        self.window.window.orderFront_(None)
+        with patch.object(config, "ensure_dirs"), patch.object(self.window, "refresh_usage"):
+            self.window.select_page("usage")
+            state.write(True, time.time() + 3600)
+            self.window.tick()
+            self.assertEqual(self.window.pause_button.title(), "Resume Ramble")
+            state.write(True, time.time() - 1)
+            before = config.STATE_PATH.read_bytes()
+            self.window.tick()
+            self.assertEqual(self.window.pause_button.title(), "Pause Ramble…")
+            self.assertEqual(self.window.capture_status.stringValue(), "Listening")
+            self.assertEqual(config.STATE_PATH.read_bytes(), before)
+            state.write(False)
+            self.window.tick()
+            self.assertEqual(self.window.capture_status.stringValue(), "Microphone off")
+            self.assertTrue(self.window.pause_button.isEnabled())
+
+    def test_resume_click_at_expiry_does_not_toggle_microphone_off(self):
+        from ramble.app import RambleApp
+        self.app.tick = Mock()
+        self.app.resume = lambda sender: RambleApp.resume(self.app, sender)
+        self.window.window.orderFront_(None)
+        with patch.object(config, "ensure_dirs"):
+            state.write(True, time.time() + 3600)
+            self.window.tick()
+            state.write(True, time.time() - 1)
+            self.window.pause_button.performClick_(None)
+            self.assertTrue(state.is_listening())
+            self.assertIsNone(state.read()["paused_until"])
+            self.app.toggle.assert_not_called()
 
     def test_usage_render_preserves_unknowns_and_attribution(self):
         store = usage.UsageStore()

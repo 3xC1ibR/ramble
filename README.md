@@ -31,8 +31,11 @@ remembered. **Show mini window** in the menu toggles visibility, and **Reset
 mini window position** returns it to the default. Right-click the pill for the
 same position reset. It does not take keyboard focus or change microphone state.
 
-Hover over the pill to reveal two controls: **sparkles** opens the existing
-model/reasoning menu, and the **expand arrows** open Ramble's native app window. Choose
+Hover over the pill to reveal three controls: **pause** offers 15 minutes, 1 hour,
+or 3 hours of quiet snooze, **sparkles** opens the existing model/reasoning menu,
+and the **expand arrows** open Ramble's native app window. During a timed pause,
+the pause button becomes **play** to resume early. Right-click also offers
+Pause / Resume Ramble. Choose
 models for quick replies, thought review or new work sessions from the popup.
 The current activity stays visible between the buttons, including live
 waveforms. The pill stays expanded while the model menu is open and contracts
@@ -57,12 +60,67 @@ leave a speaking waveform stuck. Reduce Motion disables decorative pulsing and
 size animations; the waveform still shows measured levels. Window preferences
 live in `~/.ramble/mini-window.json`, independently of the microphone switch.
 
+If the macOS audio driver blocks microphone control for 30 seconds, Ramble exits
+with a failure so the installed launch agent restarts it with the saved listening
+switch. The first capture-control operation allows five minutes for the initial
+microphone permission prompt. This also recovers driver hangs during pause or
+resume, which would otherwise leave the mini window at **Starting** indefinitely.
+
+When ambient triage starts a background task, the pill shows its name and
+**Stop** for twelve seconds. Hover over the pill to recall the latest task while
+it is running. Stop interrupts that displayed task through Ribbon Field;
+completed actions remain completed. The pill reports stopping, completion or a
+failure to confirm Stop. It never takes keyboard focus. Research starts
+automatically, and explicit dictation continues to bypass triage and dispatch.
+
 **Ramble window:** choose **Open Ramble…** in the menu or expand the floating
 pill. The resizable window has **Settings** and **Token usage** pages. Settings
 includes model/reasoning controls, microphone and voice switches, mini-window
 visibility, and the same global instructions editor used by Companion. Closing
 the window returns to the mini experience; Ramble keeps running, and reopening
 reuses the window and any unsaved instructions draft.
+The sidebar's **Pause Ramble…** control is available on both pages. Choose
+**Pause 1 hour** or **Pause 3 hours**; the sidebar shows the resume time and
+changes the control to **Resume Ramble** for ending the pause early.
+
+**Shortcut dictation:** with the microphone on, press **Control+Option+Space**
+once to start dictation and again to finish. Ramble copies the transcript and
+pastes it into the input that was focused when you started. Pauses between
+sentences remain part of the same dictation. The floating pill shows a mint
+**Dictating** waveform, then **Transcribing**, followed by **Pasted** or **Copied**.
+It never takes keyboard focus or presses Return to submit the text.
+Press **Escape** while dictating or while the final transcript is processing to
+cancel without copying or pasting. The pill shows **Cancelled**, and ambient
+listening resumes. Escape keeps its normal behavior when dictation is inactive.
+After a paste, **Undo** appears in the floating pill for **six seconds**. Click
+it to undo the paste in the original input; otherwise it disappears. Typing or
+starting another dictation also dismisses it. Undo checks the original input
+and, when the app exposes it, the pasted text before sending Command+Z. It
+leaves the transcript on the clipboard. Clipboard-only results do not show Undo.
+
+Choose **Dictation shortcut…** in the menu, or open **Settings → Dictation
+shortcut**, enter a combination such as `Control+Option+D`, and click **Set
+shortcut**. It takes effect immediately and persists in
+`~/.ramble/dictation.json`. Use Control, Option or Command, optionally Shift,
+with a letter, digit, Space, Return, Tab or F1–F12. Letter/punctuation bindings
+use the corresponding US keyboard position. Unavailable combinations leave
+the existing shortcut unchanged.
+
+Click **Enable auto-paste…** in Settings and enable Ramble in **System Settings →
+Privacy & Security → Accessibility**. Without that permission, or if the selected
+input changes/cannot be verified, the transcript stays on the clipboard for
+**Command+V**. “Pasted” means the paste keystroke was sent; individual apps may
+decline it. A recording with failed segments copies any available text but does
+not paste a partial result. Empty dictation leaves the clipboard unchanged.
+
+Dictation uses the existing microphone and local Whisper worker. The shortcut
+sets its intent: transcripts are recorded as **dictation** and bypass Jev,
+thought triage, wake-name handling and work dispatch. Audio and text remain in
+Ramble's normal local history. After finishing, ambient listening resumes.
+Turning off or pausing capture cancels pending paste; the shortcut never turns
+the microphone on or resumes a pause. A ten-minute limit finishes long
+recordings automatically. Restarting Ramble can finish saved transcription but
+never replays an old paste.
 
 **Token usage:** select Today, 7 days, or All recorded to see input, cached input,
 output, and total tokens, attributed by activity/provider/model or individual
@@ -122,7 +180,8 @@ Voice commands require the microphone to be listening and cannot interrupt
 speech that the playback echo guard drops; use the menu or CLI during playback.
 
 **Quiet snooze for sleep:** choose **Pause 1 hour** or **Pause 3 hours** from the
-menu, or run `ramble off 2h` with your chosen duration (`90m`, `4h`, etc.).
+menu or the app window's **Pause Ramble…** control, or run `ramble off 2h` with
+your chosen duration (`90m`, `4h`, etc.).
 `ramble status` shows the resume time and the menu icon becomes ⏸. Timed pause
 stops capture, cancels queued fast replies and chimes, interrupts active Ramble
 playback, holds ambient triage, and suppresses new dispatches, spoken questions,
@@ -130,17 +189,40 @@ macOS notifications and ntfy pushes. `ramble say` also refuses playback during
 a timed pause; `say --no-play` still generates a file silently.
 
 Listening resumes automatically at expiry while the app is running, without a
-chime or announcement. Choose **Turn on** or run `ramble on` to resume early.
+chime or announcement. Choose **Resume Ramble** in the window, **Turn on** in the
+menu, or run `ramble on` to resume early.
 Unprocessed thoughts from before the pause can be triaged after resuming; stale
 fast replies stay cancelled. Work already handed to other agents continues,
 and notifications from other apps are controlled separately by macOS Focus.
 `ramble off` without a duration remains the microphone switch; use a timed
 pause for the quiet behavior described here. Pause/resume must be selected in
-the menu or terminal, not by voice while the mic is stopped.
+the app window, menu or terminal, not by voice while the mic is stopped.
 
 **First run:** the first time you turn it on, macOS asks "Ramble would like to access the microphone". Click Allow. If you click Don't Allow, re-enable it in System Settings → Privacy & Security → Microphone → Ramble.
 
 Turn it off for guests, calls and movies. The triage prompt also treats TV, other people and phone calls as `ambient` or `personal` and never dispatches from them.
+
+Microphone capture is checked every second while listening. A stopped stream,
+five seconds without audio callbacks, ten seconds without processing progress,
+or thirty seconds of exact zero samples triggers automatic reopening. Ordinary
+quiet microphone noise does not trigger recovery. Repeated failures back off to
+one attempt every thirty seconds and remain visible as microphone errors.
+Recovery cancels active shortcut dictation to prevent an incomplete paste.
+Turning capture off or pausing it stops recovery until listening resumes.
+
+## Article reading and read-along
+
+Open **Reading** in the native app or the read-along in Companion's workspace.
+Paste an article or ask Ramble to read a retrieved article. Both views show the
+original text, highlight the passage actually playing, and share Pause, Resume,
+saved position, questions and **Where were we?**. Playback starts with a short
+passage while later passages prepare in the background. Restarting keeps your
+place and leaves reading paused. Explanations remain separate from the source.
+
+Use the visible Pause during playback: the current microphone echo guard still
+suppresses speech while Ramble speaks. After pausing, “Ramble, keep going” and
+“Ramble, where were we?” work by voice. See [persistent reading](docs/reading.md)
+for commands, behavior and measured synthesis latency.
 
 ## Talking to Ramble (fast lane)
 
@@ -543,6 +625,8 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 | `triage_jev_min_probability` | 0.95 | Minimum probability for the selected ambient/personal category |
 | `triage_jev_min_confidence` | 0.8 | Minimum category confidence to skip full triage |
 | `triage_jev_max_review` | 0.1 | Maximum "needs review" score to skip full triage |
+| `work_conversation_model` / `work_conversation_effort` | null / null | Pair for conversational work sessions; null inherits `fast_model` / `fast_effort` |
+| `work_followup_effort` | `low` | Reasoning level for the unnamed follow-up admission check |
 | `dispatch_client` | `codex` | agent-coord client for dispatched threads |
 | `dispatch_daily_cap` | null | Unlimited by default; positive integers cap daily threads; 0 disables dispatch |
 | `notify` / `ntfy_topic` | true / null | macOS notifications; set a topic for ntfy.sh phone pushes |
@@ -581,6 +665,14 @@ Put overrides in `~/.ramble/config.json` and restart the app. The defaults are i
 - If you click Allow on the permission prompt while ramble is set to off, it opens the mic and closes it again right away. That's expected.
 
 ## Global instructions
+
+Say **“Hey Ramble, call me coach”** to save a lasting preference by voice, including
+while a work conversation is active. **“Remember that I prefer metric units”** and
+**“Update my global instructions…”** use the same store. Ramble confirms after saving;
+later replies and work-session messages reload it automatically, including after
+a restart. You can change or forget a saved preference by asking. Voice edits preserve
+unrelated instructions and reject a stale edit if the editor saved a change meanwhile.
+Hypotheticals, quoted examples and passive captured speech do not authorize saves.
 
 Open **Instructions** in the iPad Companion (reload the Companion once after
 upgrading), or choose **Global instructions…** in Ramble's Mac menu. Enter your
@@ -669,6 +761,10 @@ Speech is serialized, waits for current speech/transcription, coalesces progress
 and gives direct answers priority. The existing playback echo guard is retained:
 the user’s speech during playback is still dropped. Voice steering works between
 updates; reliable talking over playback needs future echo cancellation.
+
+Ramble chooses each session's model and reasoning level from the router's workload
+label: discussion uses a low-latency conversation pair, substantive work uses the
+saved work pair, and explicit spoken choices win. See [model settings](docs/model-settings.md#automatic-selection-for-work-sessions).
 
 Defaults: `work_sessions_enabled: true`, `work_session_root: your home directory`,
 `work_session_yolo: true` (the existing dispatcher permission policy), and
