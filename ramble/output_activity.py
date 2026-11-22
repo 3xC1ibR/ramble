@@ -86,32 +86,52 @@ class CoreAudioReader:
         return pids
 
 
+# System alert and notification sounds are short and are not media.
+IGNORED_COMMANDS = {"systemsoundserverd", "NotificationCenter", "UserNotificationCenter"}
+
+
 def ramble_pids() -> set[int]:
-    """Ramble and its direct children (speech helpers) are not external media."""
-    own = {os.getpid()}
+    """Ramble and all its descendants (cue player, speech helpers) are not external media."""
+    own, frontier = {os.getpid()}, [os.getpid()]
     try:
         import subprocess
-        out = subprocess.run(["pgrep", "-P", str(os.getpid())], capture_output=True, text=True, timeout=2)
-        own.update(int(p) for p in out.stdout.split())
+        while frontier:
+            out = subprocess.run(["pgrep", "-P", str(frontier.pop())], capture_output=True, text=True, timeout=2)
+            children = {int(p) for p in out.stdout.split()} - own
+            own.update(children)
+            frontier.extend(children)
     except Exception:  # noqa: BLE001
         pass
     return own
+
+
+def command_name(pid: int) -> str:
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+        return os.path.basename(out.stdout.strip())
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 class OutputActivityMonitor:
     """Samples external output activity into SQLite; failures disable sampling, never capture."""
 
     def __init__(self, connect, reader=None, interval_s: float = 1.0, exclude=ramble_pids,
-                 clock=time.time, retention_s: float = 14 * 86400):
+                 clock=time.time, retention_s: float = 14 * 86400, name_of=command_name):
         self.connect = connect
         self.reader = reader
         self.interval_s = interval_s
         self.exclude = exclude
         self.clock = clock
         self.retention_s = retention_s
+        self.name_of = name_of
 
     def sample(self, conn) -> tuple[bool, set[int]]:
-        pids = self.reader.output_pids() - set(self.exclude())
+        pids = self.reader.output_pids()
+        if pids:
+            pids -= set(self.exclude())
+            pids = {p for p in pids if self.name_of(p) not in IGNORED_COMMANDS}
         now = self.clock()
         conn.execute("INSERT OR REPLACE INTO output_activity(sampled_at, active, pids) VALUES (?,?,?)",
                      (now, int(bool(pids)), ",".join(str(p) for p in sorted(pids))))

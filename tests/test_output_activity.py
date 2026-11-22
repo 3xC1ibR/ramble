@@ -24,12 +24,23 @@ class MonitorTests(unittest.TestCase):
         c = conn()
         clock = iter([100.0, 101.0])
         m = oa.OutputActivityMonitor(lambda: c, reader=FakeReader({10, 20}), exclude=lambda: {10},
-                                     clock=lambda: next(clock))
+                                     clock=lambda: next(clock), name_of=lambda pid: "Safari")
         self.assertEqual(m.sample(c), (True, {20}))
         m.reader = FakeReader({10})
         self.assertEqual(m.sample(c), (False, set()))
         self.assertEqual(c.execute("SELECT active, pids FROM output_activity ORDER BY sampled_at").fetchall(),
                          [(1, "20"), (0, "")])
+
+    def test_system_alert_sounds_are_not_media(self):
+        c = conn()
+        m = oa.OutputActivityMonitor(lambda: c, reader=FakeReader({30, 40}), exclude=set, clock=lambda: 5.0,
+                                     name_of={30: "systemsoundserverd", 40: "Music"}.get)
+        self.assertEqual(m.sample(c), (True, {40}))
+        m.reader = FakeReader({30})
+        self.assertEqual(m.sample(c), (False, set()))
+
+    def test_descendants_of_ramble_are_excluded(self):
+        self.assertIn(__import__("os").getpid(), oa.ramble_pids())
 
     def test_active_fraction(self):
         c = conn()
