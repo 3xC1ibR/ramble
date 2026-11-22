@@ -57,7 +57,7 @@ DEFAULTS = {
     "source_gate_min_judged_s": 2.0,
     "source_gate_playback_fraction": 0.5,
     "source_gate_compression_ratio": 2.4,
-    "source_gate_triage": False,  # skip Codex triage for thoughts with no owner words
+    "source_gate_triage": False,  # skip Codex triage for thoughts with no verified owner segment
 }
 
 
@@ -169,14 +169,17 @@ def thought_segments(conn, thought_id: str) -> list:
 
 
 def triage_decision(conn, thought, gate: SourceGate) -> dict | None:
-    """A local 'ambient' decision when no segment holds owner words; None means run normal triage."""
+    """A local 'ambient' decision when no segment is verified as the owner; None means run normal triage."""
     if not setting(gate.cfg, "source_gate_triage"):
         return None
     segments = thought_segments(conn, thought["id"])
     if not segments:
         return None
     verdicts = [gate.verdict(conn, s) for s in segments]
-    if any(v.keep for v in verdicts):
+    # Triage needs positive evidence of the owner's voice. Clips kept only because
+    # they were too short to judge are mostly media fragments; addressed commands
+    # reach the fast lane, which this gate never touches. Unverified means fail open.
+    if any(v.reason in ("owner_verified", "unverified") for v in verdicts):
         return None
     reasons = sorted({v.reason for v in verdicts})
     return {"classification": "ambient", "summary": "No owner speech detected (" + ", ".join(reasons) + ").",

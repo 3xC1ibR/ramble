@@ -126,7 +126,7 @@ DEFAULTS = {
     "source_gate_min_judged_s": 2.0,  # shorter clips keep their words unless the Mac was playing audio
     "source_gate_playback_fraction": 0.5,
     "source_gate_compression_ratio": 2.4,  # Whisper repetition-loop criterion
-    "source_gate_triage": False,  # thoughts without owner words skip Codex triage
+    "source_gate_triage": False,  # thoughts with no verified owner segment skip Jev and Codex triage
     # Daily transcript notes: generic route; delivery is a user-supplied command.
     "transcript_route": {
         "enabled": False,
