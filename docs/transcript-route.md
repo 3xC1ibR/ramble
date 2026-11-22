@@ -79,9 +79,12 @@ Configuration (`RAMBLE_HOME/config.json`):
 }
 ```
 
-`source_gate_triage` gives thoughts without any owner words a local `ambient`
-decision instead of a Codex triage call. Voice commands are never gated: the
-fast lane and dictation paths are unchanged.
+`source_gate_triage` gives a thought a local `ambient` decision, with no Jev or
+Codex call, when none of its segments is verified as the owner (unverified
+segments fail open to normal triage). Replayed over 2026-11-16..21 it would have
+skipped 94 of 191 triage calls: 2.21 M of 4.54 M Codex tokens (49%), plus about
+half of 0.87 M Jev tokens. Voice commands are never gated: the fast lane and
+dictation paths are unchanged.
 
 The Stoic adapter sends `"author": "user"` (Stoic's memory service indexes only
 user-authored notes), never includes Ramble-written summaries, and keeps a map

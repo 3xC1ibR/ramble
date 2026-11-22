@@ -123,6 +123,18 @@ class TriageDecisionTests(unittest.TestCase):
         self.assertEqual(d["items"], [])
         self.assertIn("other_voice", d["summary"])
 
+    def test_short_unjudged_clips_alone_do_not_trigger_triage(self):
+        c = conn()
+        add(c, "s1", "t1", "Your job is on the line!", duration=1.4)
+        d = source_gate.triage_decision(c, {"id": "t1"}, gate({"s1": 0.05}, source_gate_triage=True))
+        self.assertEqual(d["classification"], "ambient")
+
+    def test_unverified_segments_fail_open_to_triage(self):
+        c = conn()
+        add(c, "s1", "t1", "Did you see the game last night?")
+        g = SourceGate({**CFG, "source_gate_triage": True, "source_gate_profile": "/nonexistent/p.json"})
+        self.assertIsNone(source_gate.triage_decision(c, {"id": "t1"}, g))
+
     def test_any_owner_words_keep_full_triage(self):
         c = conn()
         add(c, "s1", "t1", "Did you see the game last night?")
