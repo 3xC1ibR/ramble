@@ -133,6 +133,9 @@ DEFAULTS = {
         "classes": ["log", "actionable", "dictation"],  # personal (small talk, calls) and ambient stay out
         "deliver_command": None,  # argv; receives the note JSON on stdin. None = write files only
         "output_dir": "transcript-notes",  # relative to RAMBLE_HOME
+        "min_owner_score": 0.25,  # stricter than the triage gate: notes become permanent memory
+        "interval_s": 1800,  # refresh cadence for today's file and undelivered days
+        "deliver_after_hour": 3,  # completed days are delivered after this local hour
     },
 }
 

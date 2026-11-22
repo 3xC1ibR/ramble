@@ -114,6 +114,11 @@ class Daemon:
             from .output_activity import OutputActivityMonitor
             threading.Thread(target=OutputActivityMonitor(db.connect).run_forever, args=(self.stop,),
                              name="output-activity", daemon=True).start()
+        if (self.cfg.get("transcript_route") or {}).get("enabled"):
+            # Daily owner-speech notes; delivery runs only when a command is configured.
+            from .transcript_route import TranscriptNoteScheduler
+            threading.Thread(target=TranscriptNoteScheduler(self.cfg, db.connect).run_forever, args=(self.stop,),
+                             name="transcript-notes", daemon=True).start()
         log.info("ramble started; pid=%s; state=%s; data=%s", os.getpid(), state.describe(), config.HOME)
 
     def _reading_can_play(self):
