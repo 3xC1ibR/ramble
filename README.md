@@ -401,6 +401,16 @@ replies still suppress mic capture during playback; the chime itself does not.
 - **Unnamed speech stays passive unless a conversational window admits it.** Relevant work follow-ups can receive the existing owner's spoken updates.
 - **Measured (generated audio, no playback):** a weather answer came back 9.0 s after the utterance was transcribed, and a work handoff took 5.6 s. Add about 1 s for silence detection and Whisper, and about 1.2 s of coalescing.
 
+## Source discrimination and daily transcript notes
+
+Off by default. An owner-voice gate (WeSpeaker ONNX embeddings, Core Audio
+playback activity and Whisper-artifact checks) can skip Codex triage for
+thoughts that contain no owner words, and `ramble transcript-note` builds one
+HTML document per day of the owner's own speech for any notes system; delivery
+is a user-configured command such as `contrib/stoic_note_sink.py`. See
+[docs/transcript-route.md](docs/transcript-route.md) for the rule, measured
+accuracy and configuration.
+
 ## Install / run
 
 ```bash
