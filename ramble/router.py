@@ -19,6 +19,7 @@ import urllib.request
 import uuid
 
 from . import config, db, input_receipts, instructions, model_settings, state, action_routing, usage
+from . import source_gate
 from .addressing import has_name
 from .transcribe import stamp
 from .triage_filter import TriageFilter
@@ -114,6 +115,7 @@ class Router:
         self.wake = wake
         self.current: str | None = None
         self.triage_filter = TriageFilter(cfg)
+        self.source_gate = source_gate.SourceGate(cfg)
         log.info("background Jev filter enabled=%s model=%s", cfg.get("triage_jev_enabled", True),
                  cfg.get("jev_model", "jev-1.13.0"))
 
@@ -372,7 +374,10 @@ class Router:
             else:
                 asked = self.recent_questions(conn)
                 prompt = self.build_input(conn, thought, asked=asked)
-                decision = self.triage_filter.decide(prompt, tid, recent_questions=bool(asked))
+                # Media, other voices and transcription artifacts need no model call.
+                decision = source_gate.triage_decision(conn, thought, self.source_gate)
+                if decision is None:
+                    decision = self.triage_filter.decide(prompt, tid, recent_questions=bool(asked))
                 # Do not start the slower fallback with speech newly owned by
                 # the fast lane, or after a pause while Jev was running.
                 if state.is_paused() or self.unclaimed_text(conn, thought) != unclaimed:
