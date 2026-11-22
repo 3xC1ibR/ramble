@@ -120,6 +120,20 @@ DEFAULTS = {
     "elevenlabs_similarity_boost": 0.75,
     "elevenlabs_style": 0.0,
     "elevenlabs_use_speaker_boost": True,
+    # Source discrimination (owner voice vs media, other people, artifacts). All off by default.
+    "output_activity_monitor": False,  # sample which other processes play audio (Core Audio, read-only)
+    "source_gate_profile": "owner-voice.json",  # enrolled owner voice, relative to RAMBLE_HOME
+    "source_gate_min_judged_s": 2.0,  # shorter clips keep their words unless the Mac was playing audio
+    "source_gate_playback_fraction": 0.5,
+    "source_gate_compression_ratio": 2.4,  # Whisper repetition-loop criterion
+    "source_gate_triage": False,  # thoughts without owner words skip Codex triage
+    # Daily transcript notes: generic route; delivery is a user-supplied command.
+    "transcript_route": {
+        "enabled": False,
+        "classes": ["log", "actionable", "dictation"],  # personal (small talk, calls) and ambient stay out
+        "deliver_command": None,  # argv; receives the note JSON on stdin. None = write files only
+        "output_dir": "transcript-notes",  # relative to RAMBLE_HOME
+    },
 }
 
 

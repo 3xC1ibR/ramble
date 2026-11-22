@@ -185,6 +185,51 @@ def cmd_inject(a) -> None:
     print(f"injected thought {tid}; the running app will triage it")
 
 
+def cmd_transcript_note(a) -> None:
+    """Build one day's owner-speech note; writes files only unless --deliver is given."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    from .source_gate import SourceGate
+    from . import transcript_route
+    cfg = config.load()
+    day = (dt.date.fromisoformat(a.date) if a.date
+           else dt.datetime.now(ZoneInfo(cfg.get("timezone") or "UTC")).date() - dt.timedelta(days=1))
+    conn = db.connect()
+    note = transcript_route.build_day(conn, day, cfg, SourceGate(cfg))
+    result = transcript_route.deliver(note, cfg, live=a.deliver)
+    print(json.dumps({"title": note["title"], **note["stats"], **result}, indent=1))
+
+
+def cmd_owner_voice(a) -> None:
+    """Enroll the owner voice from shortcut dictation (always the owner speaking) or show the profile."""
+    from . import speaker_embedding as se
+    path = config.HOME / config.load().get("source_gate_profile", "owner-voice.json")
+    if a.operation == "status":
+        if not path.exists():
+            sys.exit(f"no owner-voice profile at {path}; run: ramble owner-voice enroll")
+        prof = se.OwnerProfile.load(path)
+        print(json.dumps({"path": str(path), "threshold": prof.threshold, **prof.meta}, indent=1))
+        return
+    model = se.default_model_path()
+    if model is None:
+        sys.exit("WeSpeaker model not cached; set RAMBLE_OWNER_VOICE_MODEL to voxceleb_resnet34_LM.onnx")
+    from .source_gate import _read_audio
+    conn = db.connect()
+    rows = conn.execute("SELECT audio_path FROM segments WHERE source LIKE 'dictation:%' AND status='transcribed' "
+                        "AND duration >= 1.0 ORDER BY started_at DESC LIMIT ?", (a.limit,)).fetchall()
+    embedder = se.SpeakerEmbedder(model)
+    vectors = [embedder.embed(_read_audio(r[0])) for r in rows if Path(r[0]).exists()]
+    prof = se.OwnerProfile.enroll(vectors, a.threshold, {"source": "dictation segments", "model": str(model)})
+    prof.save(path)
+    print(f"enrolled {len(vectors)} dictation clips; threshold {a.threshold}; saved {path}")
+
+
+def cmd_output_activity(a) -> None:
+    from .output_activity import CoreAudioReader, ramble_pids
+    pids = CoreAudioReader().output_pids() - ramble_pids()
+    print(json.dumps({"external_output_active": bool(pids), "pids": sorted(pids)}))
+
+
 def cmd_run(a) -> None:
     from .daemon import Daemon, setup_logging
 
@@ -260,6 +305,18 @@ def main() -> None:
     ij = sub.add_parser("inject", help="test: create a thought from text (skips audio)")
     ij.add_argument("text")
     ij.set_defaults(fn=cmd_inject)
+    tn = sub.add_parser("transcript-note", help="build a day's owner-speech note (files only unless --deliver)")
+    tn.add_argument("--date", help="local date YYYY-MM-DD; default yesterday")
+    tn.add_argument("--deliver", action="store_true", help="also run transcript_route.deliver_command")
+    tn.set_defaults(fn=cmd_transcript_note)
+    ov = sub.add_parser("owner-voice", help="enroll or inspect the owner-voice profile used by the source gate")
+    ov.add_argument("operation", choices=["enroll", "status"])
+    ov.add_argument("--threshold", type=float, default=0.20,
+                    help="cosine threshold (0.20 kept 95%% of held-out owner clips in the Nov 2026 evaluation)")
+    ov.add_argument("--limit", type=int, default=300, help="most recent dictation clips to enroll")
+    ov.set_defaults(fn=cmd_owner_voice)
+    sub.add_parser("output-activity", help="show whether another process is playing audio now (read-only)"
+                   ).set_defaults(fn=cmd_output_activity)
     sub.add_parser("run", help="run the daemon in the foreground without the menu bar").set_defaults(fn=cmd_run)
     sub.add_parser("install", help="build Ramble.app and start it at login").set_defaults(fn=cmd_install)
     sub.add_parser("uninstall", help="stop and remove the login item").set_defaults(fn=cmd_uninstall)
