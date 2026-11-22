@@ -311,8 +311,8 @@ def main() -> None:
     tn.set_defaults(fn=cmd_transcript_note)
     ov = sub.add_parser("owner-voice", help="enroll or inspect the owner-voice profile used by the source gate")
     ov.add_argument("operation", choices=["enroll", "status"])
-    ov.add_argument("--threshold", type=float, default=0.20,
-                    help="cosine threshold (0.20 kept 95%% of held-out owner clips in the Nov 2026 evaluation)")
+    ov.add_argument("--threshold", type=float, default=0.204,
+                    help="cosine threshold for the gate (0.204 kept 95%% of held-out owner clips, Nov 2026)")
     ov.add_argument("--limit", type=int, default=300, help="most recent dictation clips to enroll")
     ov.set_defaults(fn=cmd_owner_voice)
     sub.add_parser("output-activity", help="show whether another process is playing audio now (read-only)"

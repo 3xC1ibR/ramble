@@ -30,6 +30,28 @@ otherwise                                                            -> remove
 Short clips are kept unless the Mac was playing audio because short owner
 commands score poorly; that was the main failure of the earlier shadow filter.
 
+### Stricter rule for notes
+
+Notes become permanent memory, so the transcript route is stricter than the gate:
+
+- a segment enters a note only with an owner score of at least `min_owner_score` (0.25);
+- a clip too short to judge enters only beside such a segment;
+- a thought enters only if it has at least one such segment;
+- unverified segments never enter. Notes fail closed and are rebuilt once verification works.
+
+Replayed over 2026-11-16..21 (the gate removes about 58% of all segments that week):
+
+| | Gate rule only | Note rule |
+|---|---|---|
+| Note text | 15,616 chars | 14,258 chars |
+| Television text in notes | 1,783 chars (11%) | 489 chars (3.4%) |
+| Owner text kept (outside the television episode) | 13,833 chars | 13,769 chars (99.5%) |
+
+The remaining television text came from one evening when a television line
+woke the fast lane, which filed the dialogue as notes. On the held-out clips,
+the 0.25 threshold removes 96–97% of other voices and keeps 90–96% of owner
+clips. It was chosen after seeing those results.
+
 ## Measured accuracy (owner's own listening labels, held out)
 
 Enrollment: 200 shortcut-dictation clips (always the owner). Threshold: the
@@ -73,11 +95,17 @@ Configuration (`RAMBLE_HOME/config.json`):
   "output_activity_monitor": true,
   "source_gate_triage": true,
   "transcript_route": {
+    "enabled": true,
     "classes": ["log", "actionable", "dictation"],
     "deliver_command": ["python3", "/path/to/ramble/contrib/stoic_note_sink.py"]
   }
 }
 ```
+
+With `transcript_route.enabled`, the daemon refreshes the files for today and the
+two previous days every 30 minutes. After 03:00 local time it delivers each
+completed day once, and again only if its content changes. Days with no kept
+speech never create a note.
 
 `source_gate_triage` gives a thought a local `ambient` decision, with no Jev or
 Codex call, when none of its segments is verified as the owner (unverified
